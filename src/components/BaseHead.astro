@@ -1,0 +1,104 @@
+---
+import siteConfig from '@/site-config';
+import type { Locale } from '@/types';
+import { getLocalizedUrl } from '@/i18n/utils';
+import { locales } from '@/generated/i18n-config';
+
+interface Props {
+  title?: string;
+  description?: string;
+  pageType?: 'article' | 'website';
+  locale?: Locale;
+  url?: URL;
+  image?: {
+    src: string;
+    alt: string;
+  };
+}
+
+const {
+  title = siteConfig.title,
+  description = siteConfig.description,
+  pageType = 'website',
+  locale = 'en',
+  url = Astro.url,
+  image = siteConfig.image,
+} = Astro.props;
+
+// 优化 D8：确保 currentLocale 是有效的 Locale
+const rawLocale = Astro.currentLocale || locale;
+const currentLocale = locales.includes(rawLocale as Locale) ? rawLocale as Locale : 'en';
+
+const siteUrl = Astro.site?.origin || 'https://astro.example.com';
+
+// 优化 D7：预计算替代语言链接，避免每次渲染重复计算
+const alternateUrls = locales.map((targetLocale: Locale) => {
+  const localizedUrl = getLocalizedUrl(url, targetLocale);
+  const fullUrl = new URL(localizedUrl, siteUrl).toString();
+  return {
+    lang: targetLocale,
+    href: fullUrl,
+  };
+});
+
+const canonicalUrl = new URL(url.pathname, siteUrl).toString();
+const imageUrl = image ? new URL(image.src, siteUrl).toString() : undefined;
+---
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="generator" content="Astro v5.6.2" />
+
+  <!-- 基础Meta -->
+  <title>{title}</title>
+  <meta name="description" content={description} />
+  <meta name="author" content={siteConfig.author} />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content={title} />
+  <meta property="og:description" content={description} />
+  <meta property="og:type" content={pageType} />
+  <meta property="og:url" content={canonicalUrl} />
+  <meta property="og:site_name" content={siteConfig.title} />
+  <meta property="og:locale" content={currentLocale === 'es' ? 'es_ES' : 'en_US'} />
+
+  {imageUrl && (
+    <>
+      <meta property="og:image" content={imageUrl} />
+      <meta property="og:image:alt" content={image.alt} />
+      <meta property="og:image:width" content="1200" />
+      <meta property="og:image:height" content="630" />
+    </>
+  )}
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content={title} />
+  <meta name="twitter:description" content={description} />
+  {imageUrl && <meta name="twitter:image" content={imageUrl} />}
+
+  <!-- Hreflang -->
+  {alternateUrls.map(({ lang, href }) => (
+    <link rel="alternate" hreflang={lang} href={href} key={lang} />
+  ))}
+  <link rel="alternate" hreflang="x-default" href={alternateUrls.find(a => a.lang === 'en')?.href || canonicalUrl} />
+
+  <!-- Canonical -->
+  <link rel="canonical" href={canonicalUrl} />
+
+  <!-- 图标 -->
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="alternate icon" href="/favicon.ico" type="image/x-icon" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180" />
+
+  <!-- RSS -->
+  <link rel="alternate" type="application/rss+xml" href="/rss.xml" title={`${siteConfig.title} RSS Feed`} />
+
+  <!-- 主题颜色 -->
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f172a" />
+
+  <!-- 预加载关键资源 -->
+  <link rel="preload" href="/favicon.svg" as="image" type="image/svg+xml" />
+</head>

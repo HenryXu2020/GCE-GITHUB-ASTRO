@@ -1,0 +1,314 @@
+---
+// src/components/Menu.astro
+import type { MenuNode } from '@/lib/menu';
+
+export interface Props {
+  items: MenuNode[];
+  currentLocale: string;
+  level?: number;
+  mobile?: boolean;
+  horizontal?: boolean;
+}
+
+const {
+  items,
+  currentLocale,
+  level = 0,
+  mobile = false,
+  horizontal = true
+} = Astro.props;
+
+const isRoot = level === 0;
+
+const getHref = (url: string | null | undefined): string => {
+  if (!url) return '#';
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  const locale = currentLocale || 'en';
+  const normalized = url.startsWith('/') ? url : `/${url}`;
+  return `/${locale}${normalized}`;
+};
+
+const hasRenderableChildren = (item: MenuNode): boolean => {
+  return item.children?.some(child =>
+    child && (child.url || child.children?.length)
+  ) ?? false;
+};
+---
+
+{items?.length > 0 && (
+  <ul
+    class:list={[
+      isRoot && horizontal && !mobile && 'flex items-center space-x-6',
+      isRoot && mobile && 'space-y-3',
+      !isRoot && level === 1 && !mobile && horizontal && 'submenu absolute left-0 top-full min-w-[200px] max-w-[300px] bg-white dark:bg-gray-800 shadow-lg rounded-md py-2 z-50 border border-gray-100 dark:border-gray-700',
+      !isRoot && level >= 2 && !mobile && horizontal && 'submenu-level2 absolute left-full top-0 min-w-[200px] max-w-[300px] bg-white dark:bg-gray-800 shadow-lg rounded-md py-2 z-50 border border-gray-100 dark:border-gray-700',
+      !isRoot && mobile && 'ml-4 pl-4 border-l border-gray-200 dark:border-gray-700 space-y-2',
+    ]}
+    role={isRoot ? 'menubar' : 'menu'}
+    data-menu-level={level}
+  >
+    {items.map((item) => {
+      if (!item?.documentId) return null;
+      const hasChildren = hasRenderableChildren(item);
+      const href = getHref(item.url);
+      const showDropdownIcon = hasChildren && !mobile && horizontal;
+
+      return (
+        <li
+          class:list={[
+            'relative',
+            hasChildren && !mobile && horizontal ? 'menu-item' : '',
+            mobile ? 'block' : ''
+          ]}
+          key={item.documentId}
+          role="none"
+          data-has-children={hasChildren}
+        >
+          {item.url ? (
+            <a
+              href={href}
+              target={item.targetBlank ? '_blank' : undefined}
+              rel={item.targetBlank ? 'noopener noreferrer' : undefined}
+              class:list={[
+                'transition-colors duration-200',
+                mobile
+                  ? 'block px-4 py-2.5 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg text-base font-medium'
+                  : horizontal
+                    ? 'flex items-center w-full px-3 py-2 text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 font-medium text-sm'
+                    : 'block px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 text-sm'
+              ]}
+              aria-label={item.title}
+              role="menuitem"
+              aria-haspopup={hasChildren ? 'true' : undefined}
+            >
+              <span class={!mobile && horizontal ? 'truncate flex-1' : ''}>{item.title}</span>
+              {showDropdownIcon && (
+                <svg class="w-3.5 h-3.5 ml-1 inline opacity-60 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                </svg>
+              )}
+            </a>
+          ) : (
+            <span
+              class:list={[
+                mobile
+                  ? 'block px-4 py-2.5 text-gray-500 dark:text-gray-400 font-semibold text-sm uppercase tracking-wide'
+                  : horizontal
+                    ? 'flex items-center w-full px-3 py-2 text-gray-400 dark:text-gray-500 cursor-default text-xs font-semibold uppercase tracking-wider'
+                    : 'block px-4 py-2 text-gray-400 dark:text-gray-500 cursor-default text-xs font-semibold uppercase tracking-wider'
+              ]}
+              role="menuitem"
+              aria-disabled="true"
+            >
+              <span class={!mobile && horizontal ? 'truncate flex-1' : ''}>{item.title}</span>
+              {showDropdownIcon && (
+                <svg class="w-3.5 h-3.5 ml-1 inline opacity-60 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                </svg>
+              )}
+            </span>
+          )}
+
+          {hasChildren && (
+            <Astro.self
+              items={item.children}
+              currentLocale={currentLocale}
+              level={level + 1}
+              mobile={mobile}
+              horizontal={horizontal}
+            />
+          )}
+        </li>
+      );
+    })}
+  </ul>
+)}
+
+<style>
+  /* 子菜单基础样式 - 默认隐藏，由 JS 控制显示 */
+  .submenu,
+  .submenu-level2 {
+    display: none;
+    transition: opacity 0.05s ease-out, transform 0.05s ease-out;
+  }
+
+  /* 显示状态 */
+  .submenu.show,
+  .submenu-level2.show {
+    display: block;
+    opacity: 1;
+  }
+
+  /* 垂直下拉动画 - 起始位置更近，移动更小 */
+  .submenu {
+    transform: translateY(-5px);
+  }
+  .submenu.show {
+    transform: translateY(0);
+  }
+
+  /* 水平弹出动画 - 起始位置更近，移动更小 */
+  .submenu-level2 {
+    transform: translateX(-5px);
+  }
+  .submenu-level2.show {
+    transform: translateX(0);
+  }
+
+  /* 移动端样式 */
+  @media (max-width: 768px) {
+    li > a:active {
+      background-color: rgb(243 244 246 / var(--tw-bg-opacity));
+    }
+    .dark li > a:active {
+      background-color: rgb(55 65 81 / var(--tw-bg-opacity));
+    }
+  }
+</style>
+
+<script>
+  (function() {
+    if (window.innerWidth < 768) return;
+
+    const HIDE_DELAY = 400;   // 隐藏延迟
+    const SHOW_DELAY = 200;    // 显示延迟
+
+    const timers = new Map();  // 存储所有定时器
+
+    // 获取菜单项的直接子菜单（ul）
+    function getSubmenu(item) {
+      return item.querySelector(':scope > ul');
+    }
+
+    // 清除所有祖先菜单项的定时器
+    function clearAncestorsTimers(item) {
+      let parent = item.parentElement?.closest('li[data-has-children="true"]');
+      while (parent) {
+        if (timers.has(parent)) {
+          clearTimeout(timers.get(parent));
+          timers.delete(parent);
+        }
+        parent = parent.parentElement?.closest('li[data-has-children="true"]');
+      }
+    }
+
+    // 显示子菜单（同时隐藏同级其他子菜单）
+    function showSubmenu(item) {
+      const sub = getSubmenu(item);
+      if (!sub) return;
+
+      // 隐藏同一父级下的其他兄弟子菜单
+      const parentUl = item.parentElement;
+      if (parentUl) {
+        const siblings = parentUl.querySelectorAll(':scope > li[data-has-children="true"]');
+        siblings.forEach(sibling => {
+          if (sibling !== item) {
+            const siblingSub = getSubmenu(sibling);
+            if (siblingSub) {
+              siblingSub.classList.remove('show');
+              if (timers.has(sibling)) {
+                clearTimeout(timers.get(sibling));
+                timers.delete(sibling);
+              }
+            }
+          }
+        });
+      }
+
+      // 清除当前项的隐藏定时器
+      if (timers.has(item)) {
+        clearTimeout(timers.get(item));
+        timers.delete(item);
+      }
+
+      sub.classList.add('show');
+    }
+
+    // 隐藏子菜单（可立即或延迟）
+    function hideSubmenu(item, immediate = false) {
+      const sub = getSubmenu(item);
+      if (!sub) return;
+
+      if (immediate) {
+        if (timers.has(item)) {
+          clearTimeout(timers.get(item));
+          timers.delete(item);
+        }
+        sub.classList.remove('show');
+        return;
+      }
+
+      if (timers.has(item)) clearTimeout(timers.get(item));
+      const timerId = setTimeout(() => {
+        sub.classList.remove('show');
+        timers.delete(item);
+      }, HIDE_DELAY);
+      timers.set(item, timerId);
+    }
+
+    // 鼠标进入菜单项
+    function handleMouseEnter(e) {
+      const item = e.currentTarget;
+      // 清除自身和所有祖先的隐藏定时器
+      if (timers.has(item)) {
+        clearTimeout(timers.get(item));
+        timers.delete(item);
+      }
+      clearAncestorsTimers(item);
+
+      // 延迟显示
+      const showTimer = setTimeout(() => {
+        showSubmenu(item);
+      }, SHOW_DELAY);
+      timers.set(item, showTimer);
+    }
+
+    // 鼠标离开菜单项
+    function handleMouseLeave(e) {
+      const item = e.currentTarget;
+      // 清除自身的显示定时器
+      if (timers.has(item)) {
+        clearTimeout(timers.get(item));
+        timers.delete(item);
+      }
+      // 延迟隐藏
+      hideSubmenu(item);
+    }
+
+    // 鼠标进入子菜单区域
+    function handleSubmenuEnter(e) {
+      const sub = e.currentTarget;
+      const parentItem = sub.closest('li[data-has-children="true"]');
+      if (parentItem) {
+        if (timers.has(parentItem)) {
+          clearTimeout(timers.get(parentItem));
+          timers.delete(parentItem);
+        }
+        // 同时清理祖先定时器
+        clearAncestorsTimers(parentItem);
+      }
+    }
+
+    // 鼠标离开子菜单区域
+    function handleSubmenuLeave(e) {
+      const sub = e.currentTarget;
+      const parentItem = sub.closest('li[data-has-children="true"]');
+      if (parentItem) {
+        hideSubmenu(parentItem);
+      }
+    }
+
+    // 绑定事件
+    const menuItems = document.querySelectorAll('li[data-has-children="true"]');
+    menuItems.forEach(item => {
+      item.addEventListener('mouseenter', handleMouseEnter);
+      item.addEventListener('mouseleave', handleMouseLeave);
+
+      const sub = getSubmenu(item);
+      if (sub) {
+        sub.addEventListener('mouseenter', handleSubmenuEnter);
+        sub.addEventListener('mouseleave', handleSubmenuLeave);
+      }
+    });
+  })();
+</script>

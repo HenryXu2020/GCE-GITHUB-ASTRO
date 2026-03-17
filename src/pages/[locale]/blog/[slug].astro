@@ -1,0 +1,176 @@
+---
+// src/pages/[locale]/blog/[slug].astro
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import RichTextRenderer from '@/components/RichTextRenderer.astro';
+import { locales, type Locale, getLanguageName } from '@/generated/i18n-config';
+import { getAllContent } from '@/lib/content-cache';
+import { t } from '@/i18n/dict';
+import type { Blog } from '@/generated/graphql-types';
+import { Image } from 'astro:assets';
+import { getFullImageUrl } from '@/lib/env'; // 统一导入
+
+export async function getStaticPaths() {
+  const blogMap = getAllContent<Blog>('blog');
+  const paths = [];
+
+  for (const locale of Object.keys(blogMap) as Locale[]) {
+    const blogs = blogMap[locale];
+    for (const blog of blogs) {
+      if (blog.slug) {
+        paths.push({
+          params: { locale, slug: blog.slug },
+          props: { blog },
+        });
+      }
+    }
+  }
+
+  console.log(`[Blog Detail] Generated ${paths.length} paths from cache`);
+  return paths;
+}
+
+interface Props {
+  blog: Blog;
+}
+
+const { blog } = Astro.props;
+const { locale } = Astro.params as { locale: Locale };
+
+// 从 localizations 获取其他语言版本（过滤当前语言）
+const otherLanguages = (blog.localizations || [])
+  .filter((loc: any) => loc.locale !== locale)
+  .map((loc: any) => ({
+    locale: loc.locale,
+    slug: loc.slug,
+    title: loc.title,
+    documentId: loc.documentId,
+  }));
+
+// 预计算需要翻译的文本
+const translations = {
+  availableIn: t(locale, 'common.availableIn'),
+  backToBlog: t(locale, 'common.backToBlog'),
+  lastUpdated: t(locale, 'common.lastUpdated'),
+  minRead: t(locale, 'common.minRead'),
+};
+
+// 使用统一函数获取完整图片 URL
+const coverImageUrl = getFullImageUrl(blog.cover?.url);
+const coverAlt = blog.cover?.alternativeText || blog.title;
+---
+
+<BaseLayout
+  title={blog.title}
+  description={blog.excerpt || blog.title}
+  pageType="article"
+  locale={locale}
+  image={coverImageUrl ? { src: coverImageUrl, alt: coverAlt } : undefined}
+>
+  <article class="max-w-3xl mx-auto">
+    <!-- 文章头部 -->
+    <header class="mb-8">
+      <h1 class="text-4xl md:text-5xl font-bold mb-4">{blog.title}</h1>
+
+      <div class="flex flex-wrap items-center gap-4 text-gray-600 dark:text-gray-400 mb-6">
+        <div class="flex items-center">
+          <span class="font-medium">{blog.author}</span>
+        </div>
+
+        <div class="flex items-center">
+          <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clip-rule="evenodd" />
+          </svg>
+          <time datetime={blog.publishedAt}>
+            {new Date(blog.publishedAt).toLocaleDateString(locale, {
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric',
+            })}
+          </time>
+        </div>
+
+        <div class="flex items-center">
+          <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd" />
+          </svg>
+          <span>
+            {Math.ceil((blog.content || []).length / 100)} {translations.minRead}
+          </span>
+        </div>
+      </div>
+
+      {coverImageUrl && (
+        <div class="mb-8">
+          <Image
+            src={coverImageUrl}
+            alt={coverAlt}
+            width={1200}
+            height={630}
+            class="w-full h-auto max-h-96 object-cover rounded-xl shadow-lg"
+            loading="eager"
+            decoding="async"
+            format="webp"
+          />
+          {blog.cover?.alternativeText && (
+            <p class="text-center text-sm text-gray-500 dark:text-gray-400 mt-2">
+              {blog.cover.alternativeText}
+            </p>
+          )}
+        </div>
+      )}
+    </header>
+
+    <!-- 文章内容 -->
+    <div class="prose dark:prose-invert prose-lg max-w-none mb-12">
+      <RichTextRenderer content={blog.content} />
+    </div>
+
+    <!-- 文章底部 -->
+    <footer class="pt-8 border-t border-gray-200 dark:border-gray-700">
+      {otherLanguages.length > 0 && (
+        <div class="mb-8 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+          <h3 class="text-lg font-semibold mb-3 text-blue-800 dark:text-blue-300">
+            {translations.availableIn}
+          </h3>
+          <div class="flex flex-wrap gap-2">
+            {otherLanguages.map(({ locale: lang, slug, title }) => (
+              <a
+                key={lang}
+                href={`/${lang}/blog/${slug}`}
+                class="inline-flex items-center px-4 py-2 bg-white dark:bg-gray-800 border border-blue-200 dark:border-blue-700 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors"
+                title={title}
+              >
+                <span class="text-blue-700 dark:text-blue-300 font-medium">
+                  {getLanguageName(lang)}
+                </span>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <a
+          href={`/${locale}/blog`}
+          class="inline-flex items-center text-blue-600 dark:text-blue-400 hover:underline font-medium"
+        >
+          <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+          </svg>
+          {translations.backToBlog}
+        </a>
+
+        <div class="text-sm text-gray-500 dark:text-gray-400">
+          {translations.lastUpdated}:{' '}
+          <time datetime={blog.updatedAt}>
+            {new Date(blog.updatedAt).toLocaleDateString(locale, {
+              year: 'numeric',
+              month: 'short',
+              day: 'numeric',
+            })}
+          </time>
+        </div>
+      </div>
+    </footer>
+  </article>
+</BaseLayout>

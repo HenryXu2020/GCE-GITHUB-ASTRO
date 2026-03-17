@@ -1,0 +1,61 @@
+---
+import { fade } from 'astro:transitions';
+import { ViewTransitions } from 'astro:transitions';
+import BaseHead from '@/components/BaseHead.astro';
+import Header from '@/components/Header.astro';
+import Footer from '@/components/Footer.vue';
+import ScrollToTop from '@/components/ScrollToTop.vue';
+import type { Locale } from '@/types';
+
+interface Props {
+  title?: string;
+  description?: string;
+  pageType?: 'article' | 'website';
+  locale?: Locale;
+  image?: {
+    src: string;
+    alt: string;
+  };
+}
+
+const {
+  title,
+  description,
+  pageType = 'website',
+  locale,
+  image,
+} = Astro.props;
+
+const currentLocale = (Astro.currentLocale || locale || 'en') as Locale;
+const currentUrl = Astro.url;
+---
+
+<!doctype html>
+<html lang={currentLocale}>
+  <head>
+    <BaseHead
+      title={title}
+      description={description}
+      pageType={pageType}
+      locale={currentLocale}
+      url={currentUrl}
+      image={image}
+    />
+    <ViewTransitions />
+  </head>
+  <body class="bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 min-h-screen font-sans antialiased transition-colors duration-300">
+    <Header currentLocale={currentLocale} />
+
+    <main
+      class="min-h-screen pt-20 pb-16"
+      transition:animate={fade({ duration: '0.4s' })}
+    >
+      <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <slot />
+      </div>
+    </main>
+
+    <Footer client:load />
+    <ScrollToTop client:load />
+  </body>
+</html>

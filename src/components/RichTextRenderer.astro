@@ -1,0 +1,116 @@
+---
+// src/components/RichTextRenderer.astro
+import type { StrapiBlock, StrapiTextNode, StrapiLinkNode } from '@/types';
+
+interface Props {
+  content: StrapiBlock[];
+  className?: string;
+}
+
+const { content, className = '' } = Astro.props;
+
+// 检查是否有内容
+const hasContent = content && Array.isArray(content) && content.length > 0;
+
+// 辅助函数：渲染文本节点（返回 HTML 字符串，因为 Astro 组件中直接输出）
+function renderTextNode(node: StrapiTextNode): string {
+  let text = node.text;
+
+  if (node.bold) text = `<strong>${text}</strong>`;
+  if (node.italic) text = `<em>${text}</em>`;
+  if (node.underline) text = `<u>${text}</u>`;
+  if (node.strikethrough) text = `<s>${text}</s>`;
+  if (node.code) text = `<code>${text}</code>`;
+
+  return text;
+}
+
+// 辅助函数：渲染链接节点
+function renderLinkNode(node: StrapiLinkNode): string {
+  const target = node.url?.startsWith('http') ? 'target="_blank" rel="noopener noreferrer"' : '';
+  const childrenHtml = renderChildren(node.children);
+  return `<a href="${node.url}" ${target}>${childrenHtml}</a>`;
+}
+
+// 辅助函数：渲染子节点（可能是文本或链接）
+function renderChildren(children: Array<StrapiTextNode | StrapiLinkNode>): string {
+  return children.map(child => {
+    if (child.type === 'text') {
+      return renderTextNode(child);
+    } else if (child.type === 'link') {
+      return renderLinkNode(child);
+    }
+    return '';
+  }).join('');
+}
+
+// 主渲染函数（按 block 类型分发）
+function renderBlock(block: StrapiBlock): string {
+  switch (block.type) {
+    case 'paragraph':
+      return `<p>${renderChildren(block.children)}</p>`;
+
+    case 'heading':
+      const level = block.level;
+      return `<h${level} class="heading-${level}">${renderChildren(block.children)}</h${level}>`;
+
+    case 'list':
+      const tag = block.format === 'ordered' ? 'ol' : 'ul';
+      const listClass = block.format === 'ordered' ? 'list-decimal' : 'list-disc';
+      const itemsHtml = block.children.map(item => renderBlock(item)).join('');
+      return `<${tag} class="${listClass}">${itemsHtml}</${tag}>`;
+
+    case 'list-item':
+      return `<li>${renderChildren(block.children)}</li>`;
+
+    case 'quote':
+      return `<blockquote>${block.children.map(p => renderBlock(p)).join('')}</blockquote>`;
+
+    case 'code':
+      // 假设 code block 的 children 是文本节点数组
+      const codeContent = block.children.map(child => child.text).join('');
+      const language = block.language ? ` class="language-${block.language}"` : '';
+      return `<pre><code${language}>${escapeHtml(codeContent)}</code></pre>`;
+
+    case 'image':
+      const img = block.image;
+      if (!img.url) return '';
+      return `<img src="${img.url}" alt="${img.alternativeText || ''}" loading="lazy" width="${img.width || ''}" height="${img.height || ''}" />`;
+
+    default:
+      // 未知类型：尝试递归其子节点（如果有），否则忽略
+      if ('children' in block && Array.isArray((block as any).children)) {
+        return renderChildren((block as any).children);
+      }
+      return '';
+  }
+}
+
+// HTML 转义（用于代码块内容）
+function escapeHtml(text: string): string {
+  if (typeof document === 'undefined') {
+    // 服务端渲染时使用字符串替换
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+  // 客户端渲染时使用 DOM API
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// 生成整个 HTML 内容
+const htmlContent = hasContent
+  ? content.map(block => renderBlock(block)).join('')
+  : '';
+---
+
+{hasContent ? (
+  <div class={`rich-text-content ${className}`} set:html={htmlContent} />
+) : (
+  <div class={`rich-text-empty ${className}`}>No content available</div>
+)}

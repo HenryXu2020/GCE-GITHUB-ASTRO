@@ -1,0 +1,356 @@
+---
+// src/components/Header.astro
+import siteConfig from '@/site-config';
+import ThemeToggle from './ThemeToggle.vue';
+import Menu from './Menu.astro';
+import { getMenuTree } from '@/lib/menu';
+import { t, type Locale } from '@/i18n/dict';
+import { getLocalizedUrl, getLanguageName } from '@/i18n/utils';
+import { locales } from '@/generated/i18n-config';
+
+interface Props {
+  currentLocale?: Locale;
+}
+
+const { currentLocale = 'en' as Locale } = Astro.props;
+
+// ========== 动态菜单逻辑 ==========
+const menuTree = getMenuTree(currentLocale);
+
+// 分离按钮项和普通菜单项
+const buttonItems = menuTree.filter(item => item.isButton);
+const navItems = menuTree.filter(item => !item.isButton);
+
+// 降级方案：当动态菜单为空时，使用站点配置的硬编码链接
+const getFallbackLinks = () => {
+  const baseLinks = siteConfig.header.navLinks || [];
+  const baseUrl = Astro.site?.origin || 'http://localhost';
+  return siteConfig.header.navLinks.map(link => ({
+    text: link.text,
+    href: getLocalizedUrl(new URL(link.href, baseUrl), currentLocale),
+  }));
+};
+const fallbackLinks = getFallbackLinks();
+// ========== 动态菜单逻辑结束 ==========
+
+const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${currentLocale}`;
+---
+
+<header
+  id="header"
+  class="fixed top-0 left-0 right-0 bg-white/90 dark:bg-gray-900/90 backdrop-blur-sm z-50 border-b border-gray-200 dark:border-gray-800"
+  view-transition-name="site-header"
+>
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div class="flex justify-between items-center h-16">
+      <!-- Logo -->
+      <div class="flex items-center">
+        <a
+          href={getLocalizedUrl(new URL('/', Astro.url.origin), currentLocale)}
+          class="flex items-center space-x-3 group"
+          aria-label={t(currentLocale, 'navigation.home')}
+        >
+          <img
+            width="32"
+            height="32"
+            src={siteConfig.header.logo.src}
+            alt={siteConfig.header.logo.alt}
+            class="w-8 h-8 transition-transform group-hover:scale-110"
+          />
+          {isHomePage ? (
+            <span class="font-semibold text-lg hidden md:inline">
+              {siteConfig.title}
+            </span>
+          ) : (
+            <span class="font-semibold text-lg hidden md:inline text-gray-600 dark:text-gray-400">
+              {siteConfig.title}
+            </span>
+          )}
+        </a>
+      </div>
+
+      <!-- Desktop Navigation -->
+      <nav class="hidden md:flex items-center space-x-2">
+        <!-- 动态导航菜单（水平模式） -->
+        {navItems.length > 0 ? (
+          <Menu items={navItems} currentLocale={currentLocale} horizontal={true} />
+        ) : (
+          /* 降级到硬编码链接 */
+          <>
+            {fallbackLinks.map((link) => (
+              <a
+                key={link.href}
+                href={link.href}
+                class="text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 transition-colors font-medium px-3 py-2"
+                aria-label={link.text}
+              >
+                {link.text}
+              </a>
+            ))}
+          </>
+        )}
+
+        <!-- 按钮项（如 Contact Us）独立渲染 -->
+        {buttonItems.map(item => {
+          const href = item.url?.startsWith('http')
+            ? item.url
+            : `/${currentLocale}${item.url?.startsWith('/') ? item.url.slice(1) : item.url || ''}`;
+          return (
+            <a
+              key={item.documentId}
+              href={href}
+              target={item.targetBlank ? '_blank' : undefined}
+              rel={item.targetBlank ? 'noopener noreferrer' : undefined}
+              class="ml-2 px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors font-medium text-sm shadow-sm hover:shadow"
+            >
+              {item.title}
+            </a>
+          );
+        })}
+
+        <!-- 语言切换器 + 社交链接 + 主题切换器 -->
+        <div class="flex items-center space-x-3 ml-4 pl-4 border-l border-gray-200 dark:border-gray-700">
+          {locales.map((locale: Locale) => {
+            const isActive = currentLocale === locale;
+            const localizedUrl = getLocalizedUrl(Astro.url, locale);
+            return (
+              <a
+                key={locale}
+                href={localizedUrl}
+                class:list={[
+                  'px-2.5 py-1.5 rounded text-xs font-semibold transition-all',
+                  isActive
+                    ? 'bg-blue-500 text-white shadow-sm'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800'
+                ]}
+                aria-label={`Switch to ${getLanguageName(locale)}`}
+                title={getLanguageName(locale)}
+              >
+                {locale.toUpperCase()}
+              </a>
+            );
+          })}
+          
+          <!-- 社交链接 -->
+          {siteConfig.socialLinks
+            .filter(link => link.header && link.href)
+            .map((link) => (
+              <a
+                key={link.text}
+                href={link.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                class="text-gray-600 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                aria-label={link.text}
+                title={link.text}
+              >
+                <i class={`${link.icon} text-lg`} />
+              </a>
+            ))
+          }
+          
+          <!-- RSS -->
+          <a
+            href="/rss.xml"
+            target="_blank"
+            class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400 transition-colors"
+            aria-label="RSS Feed"
+            title="RSS Feed"
+          >
+            <i class="i-ri-rss-line text-lg" />
+          </a>
+          
+          <!-- 主题切换器 -->
+          <ThemeToggle client:load />
+        </div>
+      </nav>
+
+      <!-- Mobile Menu Button (使用 id 便于脚本控制) -->
+      <div class="md:hidden">
+        <button
+          id="mobile-menu-button"
+          class="text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 p-2"
+          aria-label="Open menu"
+          aria-controls="mobile-menu"
+          aria-expanded="false"
+        >
+          <i class="i-ri-menu-2-line text-xl" />
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Mobile Menu (添加 data-close-mobile-menu 属性) -->
+  <div
+    id="mobile-menu"
+    class="md:hidden hidden fixed inset-0 bg-white dark:bg-gray-900 z-50 overflow-y-auto"
+  >
+    <div class="flex justify-between items-center p-4 border-b border-gray-200 dark:border-gray-800">
+      <a
+        href={getLocalizedUrl(new URL('/', Astro.url.origin), currentLocale)}
+        class="flex items-center space-x-3"
+        data-close-mobile-menu
+      >
+        <img
+          width="32"
+          height="32"
+          src={siteConfig.header.logo.src}
+          alt={siteConfig.header.logo.alt}
+          class="w-8 h-8"
+        />
+        <span class="font-semibold text-lg">{siteConfig.title}</span>
+      </a>
+      <button
+        class="text-gray-700 dark:text-gray-300 p-2"
+        aria-label="Close menu"
+        data-close-mobile-menu
+      >
+        <i class="i-ri-close-line text-2xl" />
+      </button>
+    </div>
+
+    <div class="p-4">
+      <!-- 动态导航菜单（移动端模式） -->
+      {navItems.length > 0 ? (
+        <Menu items={navItems} currentLocale={currentLocale} mobile={true} horizontal={false} />
+      ) : (
+        /* 降级方案 */
+        <nav class="space-y-2 mb-6">
+          {fallbackLinks.map((link) => (
+            <a
+              key={link.href}
+              href={link.href}
+              class="block text-lg text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 py-3 px-4 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+              data-close-mobile-menu
+            >
+              {link.text}
+            </a>
+          ))}
+        </nav>
+      )}
+
+      <!-- 移动端按钮项 -->
+      {buttonItems.length > 0 && (
+        <div class="mb-6 pt-4 border-t border-gray-200 dark:border-gray-700">
+          {buttonItems.map(item => {
+            const href = item.url?.startsWith('http')
+              ? item.url
+              : `/${currentLocale}${item.url?.startsWith('/') ? item.url.slice(1) : item.url || ''}`;
+            return (
+              <a
+                key={item.documentId}
+                href={href}
+                target={item.targetBlank ? '_blank' : undefined}
+                rel={item.targetBlank ? 'noopener noreferrer' : undefined}
+                class="block w-full text-center px-4 py-3 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors font-medium mb-2"
+                data-close-mobile-menu
+              >
+                {item.title}
+              </a>
+            );
+          })}
+        </div>
+      )}
+
+      <!-- 语言切换器（移动端） -->
+      <div class="mb-6 pt-4 border-t border-gray-200 dark:border-gray-700">
+        <h3 class="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3 px-4">
+          {t(currentLocale, 'common.language')}
+        </h3>
+        <div class="space-y-2">
+          {locales.map((locale: Locale) => {
+            const isActive = currentLocale === locale;
+            const localizedUrl = getLocalizedUrl(Astro.url, locale);
+            return (
+              <a
+                key={locale}
+                href={localizedUrl}
+                class:list={[
+                  'flex items-center justify-between px-4 py-3 rounded-lg transition-colors',
+                  isActive
+                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
+                    : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
+                ]}
+                data-close-mobile-menu
+              >
+                <span class="font-medium">{getLanguageName(locale)}</span>
+                <span class="text-sm opacity-75">{locale.toUpperCase()}</span>
+              </a>
+            );
+          })}
+        </div>
+      </div>
+
+      <!-- 社交链接（移动端） -->
+      <div class="flex flex-wrap gap-4 px-4">
+        {siteConfig.socialLinks
+          .filter(link => link.header && link.href)
+          .map((link) => (
+            <a
+              key={link.text}
+              href={link.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-gray-600 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400"
+              aria-label={link.text}
+              title={link.text}
+              data-close-mobile-menu
+            >
+              <i class={`${link.icon} text-xl`} />
+            </a>
+          ))
+        }
+        <a
+          href="/rss.xml"
+          target="_blank"
+          class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400"
+          aria-label="RSS Feed"
+          title="RSS Feed"
+          data-close-mobile-menu
+        >
+          <i class="i-ri-rss-line text-xl" />
+        </a>
+      </div>
+    </div>
+  </div>
+</header>
+
+<script lang="ts">
+  // 移动端菜单交互（独立脚本，便于维护）
+  document.addEventListener('DOMContentLoaded', () => {
+    const menuButton = document.getElementById('mobile-menu-button');
+    const mobileMenu = document.getElementById('mobile-menu');
+    const closeElements = document.querySelectorAll('[data-close-mobile-menu]');
+
+    const toggleMenu = () => {
+      if (!mobileMenu) return;
+      const isHidden = mobileMenu.classList.contains('hidden');
+      mobileMenu.classList.toggle('hidden', !isHidden);
+      menuButton?.setAttribute('aria-expanded', String(isHidden));
+    };
+
+    const closeMenu = () => {
+      mobileMenu?.classList.add('hidden');
+      menuButton?.setAttribute('aria-expanded', 'false');
+    };
+
+    menuButton?.addEventListener('click', toggleMenu);
+    closeElements.forEach(el => el.addEventListener('click', closeMenu));
+
+    // 点击外部关闭（移除了类型断言，Astro 会自动处理）
+    document.addEventListener('click', (event) => {
+      if (!mobileMenu || mobileMenu.classList.contains('hidden')) return;
+      if (!mobileMenu.contains(event.target) && !menuButton?.contains(event.target)) {
+        closeMenu();
+      }
+    });
+
+    // ESC 键关闭
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && mobileMenu && !mobileMenu.classList.contains('hidden')) {
+        closeMenu();
+        menuButton?.focus();
+      }
+    });
+  });
+</script>

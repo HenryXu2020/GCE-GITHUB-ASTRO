@@ -1,0 +1,39 @@
+{
+  "apps": [
+    {
+      "name": "astro-http-server",
+      "script": "/usr/bin/http-server",
+      "args": ["-p", "8080", "-a", "127.0.0.1", "--gzip", "--proxy", "http://localhost:8080?"],
+      "cwd": "/home/astro-vitesse-site/dist",
+      "instances": 1,
+      "exec_mode": "fork",
+      "watch": false,
+      "max_memory_restart": "256M",
+      "env": {
+        "NODE_ENV": "production"
+      },
+      "log_date_format": "YYYY-MM-DD HH:mm:ss",
+      "error_file": "/var/log/pm2/astro-http-server-error.log",
+      "out_file": "/var/log/pm2/astro-http-server-out.log",
+      "pid_file": "/var/log/pm2/astro-http-server.pid",
+      "merge_logs": true
+    },
+    {
+      "name": "webhook-handler",
+      "script": "/home/astro-vitesse-site/webhook-handler.js",
+      "cwd": "/home/astro-vitesse-site",
+      "instances": 1,
+      "exec_mode": "fork",
+      "watch": false,
+      "max_memory_restart": "256M",
+      "env": {
+        "NODE_ENV": "production"
+      },
+      "log_date_format": "YYYY-MM-DD HH:mm:ss",
+      "error_file": "/var/log/pm2/webhook-handler-error.log",
+      "out_file": "/var/log/pm2/webhook-handler-out.log",
+      "pid_file": "/var/log/pm2/webhook-handler.pid",
+      "merge_logs": true
+    }
+  ]
+}

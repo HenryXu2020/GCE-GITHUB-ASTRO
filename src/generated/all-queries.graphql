@@ -1,0 +1,575 @@
+
+query GetBlogList(
+  $locale: I18NLocaleCode,
+  $pagination: PaginationArg,
+  $sort: [String]
+) {
+  blogs(
+    locale: $locale,
+    pagination: $pagination,
+    sort: $sort
+  ) {
+        documentId
+        title
+        content
+        author
+        slug
+        createdAt
+        updatedAt
+        publishedAt
+        locale
+
+        cover {
+        documentId
+        name
+        alternativeText
+        caption
+        focalPoint
+        width
+        height
+        formats
+        hash
+        ext
+        mime
+        size
+        url
+        previewUrl
+        provider
+        provider_metadata
+        createdAt
+        updatedAt
+        publishedAt
+        }
+
+
+        localizations {
+          documentId
+          locale
+          slug
+          title
+        }
+  }
+}
+
+query GetMenuList(
+  $locale: I18NLocaleCode,
+  $pagination: PaginationArg,
+  $sort: [String]
+) {
+  menus(
+    locale: $locale,
+    pagination: $pagination,
+    sort: $sort
+  ) {
+        documentId
+        title
+        url
+        order
+        isButton
+        targetBlank
+        createdAt
+        updatedAt
+        publishedAt
+        locale
+
+        menu {
+        documentId
+        title
+        url
+        order
+        isButton
+        targetBlank
+        createdAt
+        updatedAt
+        publishedAt
+        locale
+
+        menu {
+        documentId
+        title
+        url
+        order
+        isButton
+        targetBlank
+        createdAt
+        updatedAt
+        publishedAt
+        locale
+
+        menu {
+        documentId
+        title
+        url
+        order
+        isButton
+        targetBlank
+        createdAt
+        updatedAt
+        publishedAt
+        locale
+
+
+
+
+
+        localizations {
+          documentId
+          locale
+          title
+        }
+        }
+
+
+        menus {
+        documentId
+        title
+        url
+        order
+        isButton
+        targetBlank
+        createdAt
+        updatedAt
+        publishedAt
+        locale
+
+
+
+
+
+        localizations {
+          documentId
+          locale
+          title
+        }
+        }
+
+
+        localizations {
+          documentId
+          locale
+          title
+        }
+        }
+
+
+        menus {
+        documentId
+        title
+        url
+        order
+        isButton
+        targetBlank
+        createdAt
+        updatedAt
+        publishedAt
+        locale
+
+        menu {
+        documentId
+        title
+        url
+        order
+        isButton
+        targetBlank
+        createdAt
+        updatedAt
+        publishedAt
+        locale
+
+
+
+
+
+        localizations {
+          documentId
+          locale
+          title
+        }
+        }
+
+
+        menus {
+        documentId
+        title
+        url
+        order
+        isButton
+        targetBlank
+        createdAt
+        updatedAt
+        publishedAt
+        locale
+
+
+
+
+
+        localizations {
+          documentId
+          locale
+          title
+        }
+        }
+
+
+        localizations {
+          documentId
+          locale
+          title
+        }
+        }
+
+
+        localizations {
+          documentId
+          locale
+          title
+        }
+        }
+
+
+        menus {
+        documentId
+        title
+        url
+        order
+        isButton
+        targetBlank
+        createdAt
+        updatedAt
+        publishedAt
+        locale
+
+        menu {
+        documentId
+        title
+        url
+        order
+        isButton
+        targetBlank
+        createdAt
+        updatedAt
+        publishedAt
+        locale
+
+        menu {
+        documentId
+        title
+        url
+        order
+        isButton
+        targetBlank
+        createdAt
+        updatedAt
+        publishedAt
+        locale
+
+
+
+
+
+        localizations {
+          documentId
+          locale
+          title
+        }
+        }
+
+
+        menus {
+        documentId
+        title
+        url
+        order
+        isButton
+        targetBlank
+        createdAt
+        updatedAt
+        publishedAt
+        locale
+
+
+
+
+
+        localizations {
+          documentId
+          locale
+          title
+        }
+        }
+
+
+        localizations {
+          documentId
+          locale
+          title
+        }
+        }
+
+
+        menus {
+        documentId
+        title
+        url
+        order
+        isButton
+        targetBlank
+        createdAt
+        updatedAt
+        publishedAt
+        locale
+
+        menu {
+        documentId
+        title
+        url
+        order
+        isButton
+        targetBlank
+        createdAt
+        updatedAt
+        publishedAt
+        locale
+
+
+
+
+
+        localizations {
+          documentId
+          locale
+          title
+        }
+        }
+
+
+        menus {
+        documentId
+        title
+        url
+        order
+        isButton
+        targetBlank
+        createdAt
+        updatedAt
+        publishedAt
+        locale
+
+
+
+
+
+        localizations {
+          documentId
+          locale
+          title
+        }
+        }
+
+
+        localizations {
+          documentId
+          locale
+          title
+        }
+        }
+
+
+        localizations {
+          documentId
+          locale
+          title
+        }
+        }
+
+
+        localizations {
+          documentId
+          locale
+          title
+        }
+  }
+}
+
+query GetUploadFileList(
+  $pagination: PaginationArg,
+  $sort: [String]
+) {
+  uploadFiles(
+    pagination: $pagination,
+    sort: $sort
+  ) {
+        documentId
+        name
+        alternativeText
+        caption
+        focalPoint
+        width
+        height
+        formats
+        hash
+        ext
+        mime
+        size
+        url
+        previewUrl
+        provider
+        provider_metadata
+        createdAt
+        updatedAt
+        publishedAt
+  }
+}
+
+query GetI18NLocaleList(
+  $pagination: PaginationArg,
+  $sort: [String]
+) {
+  i18NLocales(
+    pagination: $pagination,
+    sort: $sort
+  ) {
+        documentId
+        name
+        code
+        createdAt
+        updatedAt
+        publishedAt
+  }
+}
+
+query GetReviewWorkflowsWorkflowList(
+  $pagination: PaginationArg,
+  $sort: [String]
+) {
+  reviewWorkflowsWorkflows(
+    pagination: $pagination,
+    sort: $sort
+  ) {
+        documentId
+        name
+        contentTypes
+        createdAt
+        updatedAt
+        publishedAt
+
+
+        stages {
+        documentId
+        name
+        color
+        createdAt
+        updatedAt
+        publishedAt
+
+        }
+
+        stageRequiredToPublish {
+        documentId
+        name
+        color
+        createdAt
+        updatedAt
+        publishedAt
+
+        }
+  }
+}
+
+query GetReviewWorkflowsWorkflowStageList(
+  $pagination: PaginationArg,
+  $sort: [String]
+) {
+  reviewWorkflowsWorkflowStages(
+    pagination: $pagination,
+    sort: $sort
+  ) {
+        documentId
+        name
+        color
+        createdAt
+        updatedAt
+        publishedAt
+
+        workflow {
+        documentId
+        name
+        contentTypes
+        createdAt
+        updatedAt
+        publishedAt
+
+
+
+        }
+  }
+}
+
+query GetUsersPermissionsRoleList(
+  $pagination: PaginationArg,
+  $sort: [String]
+) {
+  usersPermissionsRoles(
+    pagination: $pagination,
+    sort: $sort
+  ) {
+        documentId
+        name
+        description
+        type
+        createdAt
+        updatedAt
+        publishedAt
+
+
+
+
+        users {
+        documentId
+        username
+        email
+        provider
+        confirmed
+        blocked
+        createdAt
+        updatedAt
+        publishedAt
+
+        }
+  }
+}
+
+query GetUsersPermissionsUserList(
+  $pagination: PaginationArg,
+  $sort: [String]
+) {
+  usersPermissionsUsers(
+    pagination: $pagination,
+    sort: $sort
+  ) {
+        documentId
+        username
+        email
+        provider
+        confirmed
+        blocked
+        createdAt
+        updatedAt
+        publishedAt
+
+        role {
+        documentId
+        name
+        description
+        type
+        createdAt
+        updatedAt
+        publishedAt
+
+
+
+
+        }
+  }
+}

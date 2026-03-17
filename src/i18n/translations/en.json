@@ -1,0 +1,40 @@
+{
+  "common": {
+    "blog": "Blog",
+    "projects": "Projects",
+    "notes": "Notes",
+    "talks": "Talks",
+    "readMore": "Read more →",
+    "backToBlog": "← Back to blog",
+    "availableIn": "Available in other languages",
+    "recentPosts": "Recent Posts",
+    "language": "Language",
+    "noPosts": "No blog posts yet.",
+    "lastUpdated": "Last updated",
+    "by": "by",
+    "on": "on",
+    "minRead": "min read"
+  },
+  "home": {
+    "welcome": "Vitesse theme",
+    "subtitle": "Vitesse theme for Astro, supports Vue and UnoCSS.",
+    "description": "A Minimal, SEO-friendly portfolio and blog theme for Astro.",
+    "findMeOn": "Find me on"
+  },
+  "blog": {
+    "title": "Blog",
+    "allPosts": "All blog posts"
+  },
+  "notFound": {
+    "title": "404 - Page Not Found",
+    "description": "Sorry, we couldn't find what you were looking for.",
+    "returnHome": "Return Home"
+  },
+  "navigation": {
+    "home": "Home",
+    "blog": "Blog",
+    "projects": "Projects",
+    "notes": "Notes",
+    "talks": "Talks"
+  }
+}

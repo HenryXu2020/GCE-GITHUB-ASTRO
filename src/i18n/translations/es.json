@@ -1,0 +1,40 @@
+{
+  "common": {
+    "blog": "Blog",
+    "projects": "Proyectos",
+    "notes": "Notas",
+    "talks": "Charlas",
+    "readMore": "Leer más →",
+    "backToBlog": "← Volver al blog",
+    "availableIn": "Disponible en otros idiomas",
+    "recentPosts": "Publicaciones Recientes",
+    "language": "Idioma",
+    "noPosts": "Aún no hay publicaciones.",
+    "lastUpdated": "Última actualización",
+    "by": "por",
+    "on": "el",
+    "minRead": "min de lectura"
+  },
+  "home": {
+    "welcome": "Tema Vitesse",
+    "subtitle": "Tema Vitesse para Astro, compatible con Vue y UnoCSS.",
+    "description": "Un tema minimalista y optimizado para SEO para portafolios y blogs en Astro.",
+    "findMeOn": "Encuéntrame en"
+  },
+  "blog": {
+    "title": "Blog",
+    "allPosts": "Todas las publicaciones"
+  },
+  "notFound": {
+    "title": "404 - Página No Encontrada",
+    "description": "Lo sentimos, no pudimos encontrar lo que buscabas.",
+    "returnHome": "Volver al Inicio"
+  },
+  "navigation": {
+    "home": "Inicio",
+    "blog": "Blog",
+    "projects": "Proyectos",
+    "notes": "Notas",
+    "talks": "Charlas"
+  }
+}

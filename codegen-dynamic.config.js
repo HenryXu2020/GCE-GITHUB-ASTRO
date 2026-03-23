@@ -31,9 +31,12 @@ export default {
   schema: [
     {
       [`${STRAPI_URL}/graphql`]: {
-        headers: STRAPI_TOKEN ? {
-          Authorization: `Bearer ${STRAPI_TOKEN}`,
-        } : {},
+        headers: {
+          'Content-Type': 'application/json',
+          ...(STRAPI_TOKEN && { Authorization: `Bearer ${STRAPI_TOKEN}` }),
+          // 关键：绕过 Apollo Server CSRF 保护（针对非浏览器请求）
+          'apollo-require-preflight': 'true',
+        },
         method: 'POST',
       },
     },

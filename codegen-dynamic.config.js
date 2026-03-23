@@ -2,6 +2,7 @@
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { readFileSync } from 'fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -27,20 +28,19 @@ if (!STRAPI_TOKEN) {
   );
 }
 
+// 引入本地缓存的 introspection JSON 文件（由 analyze-schema.ts 生成）
+const INTROSPECTION_FILE = join(__dirname, 'src/generated/schema-introspection.json');
+let introspectionData;
+try {
+  introspectionData = JSON.parse(readFileSync(INTROSPECTION_FILE, 'utf-8'));
+  console.log('📁 Using local introspection cache:', INTROSPECTION_FILE);
+} catch (err) {
+  console.error('❌ Failed to load introspection cache. Run "npm run analyze-schema" first.');
+  throw err;
+}
+
 export default {
-  schema: [
-    {
-      [`${STRAPI_URL}/graphql`]: {
-        headers: {
-          'Content-Type': 'application/json',
-          ...(STRAPI_TOKEN && { Authorization: `Bearer ${STRAPI_TOKEN}` }),
-          // 关键：绕过 Apollo Server CSRF 保护（针对非浏览器请求）
-          'apollo-require-preflight': 'true',
-        },
-        method: 'POST',
-      },
-    },
-  ],
+  schema: introspectionData,   // 直接使用 JSON 对象
   documents: 'src/generated/all-queries.graphql',
   generates: {
     'src/generated/graphql-types.ts': {

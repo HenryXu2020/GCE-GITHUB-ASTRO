@@ -2,45 +2,40 @@
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { readFileSync } from 'fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// 加载环境变量
 dotenv.config({ path: join(__dirname, '.env') });
 
 const STRAPI_URL = process.env.PUBLIC_STRAPI_API_URL;
 const STRAPI_TOKEN = process.env.PUBLIC_STRAPI_API_TOKEN;
+const CI_INTROSPECTION_TOKEN = process.env.CI_STRAPI_INTROSPECTION_TOKEN || '';
 
 if (!STRAPI_URL) {
   throw new Error('PUBLIC_STRAPI_API_URL environment variable is not set');
 }
 
-// 增强 Token 验证：生产环境必须提供 Token，否则抛出错误
 const isProduction = process.env.NODE_ENV === 'production';
-if (!STRAPI_TOKEN) {
-  if (isProduction) {
-    throw new Error('PUBLIC_STRAPI_API_TOKEN is required in production');
-  }
-  console.warn(
-    '⚠️ PUBLIC_STRAPI_API_TOKEN is not set – using public access only. ' +
-    'Some protected content may not be accessible.'
-  );
-}
-
-// 引入本地缓存的 introspection JSON 文件（由 analyze-schema.ts 生成）
-const INTROSPECTION_FILE = join(__dirname, 'src/generated/schema-introspection.json');
-let introspectionData;
-try {
-  introspectionData = JSON.parse(readFileSync(INTROSPECTION_FILE, 'utf-8'));
-  console.log('📁 Using local introspection cache:', INTROSPECTION_FILE);
-} catch (err) {
-  console.error('❌ Failed to load introspection cache. Run "npm run analyze-schema" first.');
-  throw err;
+if (!STRAPI_TOKEN && isProduction) {
+  throw new Error('PUBLIC_STRAPI_API_TOKEN is required in production');
 }
 
 export default {
-  schema: introspectionData,   // 直接使用 JSON 对象
+  schema: [
+    {
+      [`${STRAPI_URL}/graphql`]: {
+        headers: {
+          // 常规 Bearer token（如果存在）
+          ...(STRAPI_TOKEN ? { Authorization: `Bearer ${STRAPI_TOKEN}` } : {}),
+          // 新增 introspection token 和 CSRF 绕过头
+          'x-ci-introspection-token': CI_INTROSPECTION_TOKEN,
+          'apollo-require-preflight': 'true',
+          'x-apollo-operation-name': 'IntrospectionQuery',
+        },
+        method: 'POST',
+      },
+    },
+  ],
   documents: 'src/generated/all-queries.graphql',
   generates: {
     'src/generated/graphql-types.ts': {

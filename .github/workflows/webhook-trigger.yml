@@ -1,0 +1,72 @@
+name: Handle Strapi Webhook
+
+on:
+  repository_dispatch:
+    types: [strapi_batch, strapi_trigger-test]
+
+concurrency:
+  group: astro-build
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '20'
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  PUBLIC_STRAPI_API_URL: ${{ secrets.STRAPI_API_URL }}
+  PUBLIC_STRAPI_API_TOKEN: ${{ secrets.STRAPI_API_TOKEN }}
+  CI_STRAPI_INTROSPECTION_TOKEN: ${{ secrets.CI_STRAPI_INTROSPECTION_TOKEN }}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Cache content data
+        uses: actions/cache@v4
+        with:
+          path: src/generated/cache
+          key: ${{ runner.os }}-content-cache-${{ hashFiles('src/generated/cache/.version') }}
+          restore-keys: |
+            ${{ runner.os }}-content-cache-
+
+      - name: Test Strapi GraphQL connectivity
+        run: |
+          echo "Testing GraphQL endpoint connectivity with Bearer token..."
+          curl -X POST ${{ secrets.STRAPI_API_URL }}/graphql \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.STRAPI_API_TOKEN }}" \
+            -H "apollo-require-preflight: true" \
+            -H "x-ci-introspection-token: ${{ secrets.CI_STRAPI_INTROSPECTION_TOKEN }}" \
+            -d '{"query": "query { __typename }"}' \
+            -w "\nHTTP Status: %{http_code}\n"
+          echo "Connectivity test completed."
+
+      - name: Generate full cache
+        run: |
+          npm run analyze-schema
+          npm run generate-correct-queries
+          npm run codegen-dynamic
+          npm run generate-config
+          npm run build-cache
+
+      - name: Build Astro site
+        run: npm run build
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4

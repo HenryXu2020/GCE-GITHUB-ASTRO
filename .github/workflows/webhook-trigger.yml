@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NODE_VERSION: '20'
+  NODE_VERSION: '24'               # 升级到 Node.js 24
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   PUBLIC_STRAPI_API_URL: ${{ secrets.STRAPI_API_URL }}
   PUBLIC_STRAPI_API_TOKEN: ${{ secrets.STRAPI_API_TOKEN }}
@@ -31,6 +31,9 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci                # 依据 package-lock.json 快速安装
 
       - name: Cache content data
         uses: actions/cache@v4

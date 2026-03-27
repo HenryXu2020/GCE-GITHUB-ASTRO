@@ -76,28 +76,7 @@ export default {
         addDocBlocks: true,
         emitLegacyCommonJSImports: false,
       },
-      // 临时移除钩子，避免格式化中断构建
-      // hooks: {
-      //   afterOneFileWrite: ['prettier --write'],
-      // },
     },
   },
-  hooks: {
-    afterStart: () => {
-      console.log('🔧 Generating TypeScript types from optimized queries...');
-      console.log('   - Source: src/generated/all-queries.graphql');
-      console.log('   - Target: src/generated/graphql-types.ts');
-    },
-    afterAllFileWrite: (files) => {
-      console.log('✅ TypeScript types generated successfully!');
-      console.log(`📁 Generated ${files.length} file(s):`);
-      files.forEach(file => {
-        console.log(`   - ${file}`);
-      });
-    },
-  },
-  errorsOnly: false,
-  silent: false,
-  verbose: false,
-  debug: false,
+  // 完全移除 hooks 块，避免任何额外操作
 };

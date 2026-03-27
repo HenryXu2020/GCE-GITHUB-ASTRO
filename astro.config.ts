@@ -10,8 +10,10 @@ import path from 'path';
 
 const { locales, defaultLocale } = getConfig();
 
-// 站点基础 URL，优先使用环境变量，否则使用实际部署域名
-const SITE_URL = process.env.SITE_URL || 'https://astro.lactisoles.com';
+// 站点基础 URL，必须与 GitHub Pages 部署地址一致
+const SITE_URL = process.env.SITE_URL || 'https://henryxu2020.github.io/GCE-GITHUB-ASTRO/';
+// 添加 base 路径，对应仓库名
+const BASE_URL = process.env.BASE_URL || '/GCE-GITHUB-ASTRO/';
 
 // 读取内容缓存，获取所有博客的 slug 用于生成 customPages
 let blogPaths: string[] = [];
@@ -22,14 +24,12 @@ try {
     for (const file of files) {
       if (!file.endsWith('.json')) continue;
       const locale = file.replace(/\.json$/, '');
-      if (!locales.includes(locale)) continue; // 确保是有效语言
+      if (!locales.includes(locale)) continue;
 
       const filePath = path.join(cacheDir, file);
-      // [修复] 缓存文件现在是对象格式（以 documentId 为键），需要转换为数组
       const dataMap = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      const blogs = Object.values(dataMap); // 对象 → 数组
+      const blogs = Object.values(dataMap);
       for (const blog of blogs) {
-        // 增加空值判断，确保 blog 对象存在且包含 slug
         if (blog && typeof blog === 'object' && blog.slug) {
           const relativePath = `/${locale}/blog/${blog.slug}/`;
           const fullUrl = new URL(relativePath, SITE_URL).toString();
@@ -44,10 +44,9 @@ try {
   console.warn('⚠️ Failed to read blog cache for sitemap custom pages:', error);
 }
 
-// 过滤无效的 URL，避免破坏 sitemap
 const validBlogPaths = blogPaths.filter(path => {
   try {
-    new URL(path); // 验证是否为有效 URL
+    new URL(path);
     return true;
   } catch {
     console.warn(`⚠️ Invalid sitemap path: ${path}`);
@@ -55,16 +54,13 @@ const validBlogPaths = blogPaths.filter(path => {
   }
 });
 
-// https://astro.build/config
 export default defineConfig({
   site: SITE_URL,
-
+  base: BASE_URL,      // 关键：设置 base 路径
   server: {
     port: 1977,
   },
-
   output: 'static',
-
   i18n: {
     defaultLocale,
     locales: locales as string[],
@@ -73,20 +69,17 @@ export default defineConfig({
       redirectToDefaultLocale: true,
     },
   },
-
   build: {
     inlineStylesheets: 'auto',
     format: 'directory',
     assets: '_astro',
   },
-
   image: {
     service: {
       entrypoint: 'astro/assets/services/sharp'
     },
     domains: ['strabi.lactisoles.com']
   },
-
   vite: {
     build: {
       rollupOptions: {
@@ -103,7 +96,6 @@ export default defineConfig({
       }
     }
   },
-
   integrations: [
     mdx(),
     sitemap({
@@ -122,7 +114,6 @@ export default defineConfig({
     UnoCSS({ injectReset: true }),
     vue(),
   ],
-
   markdown: {
     shikiConfig: {
       themes: {

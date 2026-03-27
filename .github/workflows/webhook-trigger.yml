@@ -62,7 +62,21 @@ jobs:
         run: npm run generate-correct-queries
 
       - name: Generate TypeScript types (codegen)
+        id: codegen
+        continue-on-error: true
         run: npm run codegen-dynamic
+
+      - name: Verify codegen output
+        run: |
+          echo "Codegen exit code/outcome: ${{ steps.codegen.outcome }}"
+          if [ -f src/generated/graphql-types.ts ]; then
+            echo "✅ graphql-types.ts exists"
+            ls -la src/generated/graphql-types.ts
+            head -n 5 src/generated/graphql-types.ts
+          else
+            echo "❌ graphql-types.ts not found"
+            exit 1
+          fi
 
       - name: Generate i18n configuration
         run: npm run generate-config

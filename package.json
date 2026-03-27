@@ -6,7 +6,7 @@
     "prepare": "simple-git-hooks",
     "codegen": "graphql-codegen --config codegen.config.js",
     "generate-dynamic": "tsx scripts/generate-queries-correct.ts",
-    "codegen-dynamic": "graphql-codegen --config codegen-dynamic.config.js",
+    "codegen-dynamic": "graphql-codegen --config codegen-dynamic.config.js --verbose",
     "build-dynamic": "npm run analyze-schema && npm run generate-dynamic && npm run codegen-dynamic",
     "clean-generated": "rm -f src/generated/all-queries.graphql src/generated/graphql-types.ts src/generated/config.ts src/generated/content-types.ts src/generated/content-cache.*",
     "predev": "npm run clean-generated && npm run build-dynamic && npm run generate-config && npm run build-cache",

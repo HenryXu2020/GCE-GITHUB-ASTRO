@@ -25,9 +25,7 @@ export default {
     {
       [`${STRAPI_URL}/graphql`]: {
         headers: {
-          // 常规 Bearer token（如果存在）
           ...(STRAPI_TOKEN ? { Authorization: `Bearer ${STRAPI_TOKEN}` } : {}),
-          // 新增 introspection token 和 CSRF 绕过头
           'x-ci-introspection-token': CI_INTROSPECTION_TOKEN,
           'apollo-require-preflight': 'true',
           'x-apollo-operation-name': 'IntrospectionQuery',
@@ -78,9 +76,10 @@ export default {
         addDocBlocks: true,
         emitLegacyCommonJSImports: false,
       },
-      hooks: {
-        afterOneFileWrite: ['prettier --write'],
-      },
+      // 临时移除钩子，避免格式化中断构建
+      // hooks: {
+      //   afterOneFileWrite: ['prettier --write'],
+      // },
     },
   },
   hooks: {

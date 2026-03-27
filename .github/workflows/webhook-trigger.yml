@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NODE_VERSION: '24'               # 升级到 Node.js 24
+  NODE_VERSION: '24'
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   PUBLIC_STRAPI_API_URL: ${{ secrets.STRAPI_API_URL }}
   PUBLIC_STRAPI_API_TOKEN: ${{ secrets.STRAPI_API_TOKEN }}
@@ -33,7 +33,7 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci                # 依据 package-lock.json 快速安装
+        run: npm ci
 
       - name: Cache content data
         uses: actions/cache@v4
@@ -55,13 +55,20 @@ jobs:
             -w "\nHTTP Status: %{http_code}\n"
           echo "Connectivity test completed."
 
-      - name: Generate full cache
-        run: |
-          npm run analyze-schema
-          npm run generate-correct-queries
-          npm run codegen-dynamic
-          npm run generate-config
-          npm run build-cache
+      - name: Analyze schema
+        run: npm run analyze-schema
+
+      - name: Generate GraphQL queries
+        run: npm run generate-correct-queries
+
+      - name: Generate TypeScript types (codegen)
+        run: npm run codegen-dynamic
+
+      - name: Generate i18n configuration
+        run: npm run generate-config
+
+      - name: Build content cache
+        run: npm run build-cache
 
       - name: Build Astro site
         run: npm run build

@@ -3,6 +3,11 @@ name: Handle Strapi Webhook
 on:
   repository_dispatch:
     types: [strapi_batch, strapi_trigger-test]
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
 
 concurrency:
   group: astro-build
@@ -35,14 +40,93 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Cache content data
-        uses: actions/cache@v4
+      # ------------------------------------------------------------
+      # 缓存恢复（所有分支共享）
+      # ------------------------------------------------------------
+      - name: Restore content cache
+        id: cache-restore
+        uses: actions/cache/restore@v4
         with:
           path: src/generated/cache
           key: ${{ runner.os }}-content-cache-${{ hashFiles('src/generated/cache/.version') }}
           restore-keys: |
             ${{ runner.os }}-content-cache-
 
+      # ------------------------------------------------------------
+      # 增量更新路径（仅用于 repository_dispatch 事件）
+      # ------------------------------------------------------------
+      - name: Process incremental updates
+        if: github.event_name == 'repository_dispatch'
+        env:
+          EVENTS: ${{ toJSON(github.event.client_payload.events) }}
+        run: |
+          echo "Processing incremental updates..."
+          # 解析 events 数组并逐个调用 update-cache-entry.ts
+          echo "$EVENTS" | jq -c '.[]' | while read -r event; do
+            MODEL=$(echo "$event" | jq -r '.model')
+            ID=$(echo "$event" | jq -r '.id')
+            ACTION=$(echo "$event" | jq -r '.action')
+            LOCALES=$(echo "$event" | jq -r '.locales[]?')
+            if [ -z "$LOCALES" ]; then
+              echo "Updating $MODEL/$ID ($ACTION) with default locale"
+              npx tsx scripts/update-cache-entry.ts \
+                --model "$MODEL" \
+                --id "$ID" \
+                --event "$ACTION"
+            else
+              for LOCALE in $LOCALES; do
+                echo "Updating $MODEL/$ID ($ACTION) locale=$LOCALE"
+                npx tsx scripts/update-cache-entry.ts \
+                  --model "$MODEL" \
+                  --id "$ID" \
+                  --locale "$LOCALE" \
+                  --event "$ACTION"
+              done
+            fi
+          done
+          echo "Incremental updates completed."
+
+      # ------------------------------------------------------------
+      # 更新缓存版本文件（仅增量更新后）
+      # ------------------------------------------------------------
+      - name: Update cache version (incremental)
+        if: github.event_name == 'repository_dispatch'
+        run: |
+          # 生成新的版本标识（基于当前时间戳 + 随机数，确保唯一）
+          VERSION=$(date +%s)-${{ github.run_id }}
+          mkdir -p src/generated/cache
+          echo "$VERSION" > src/generated/cache/.version
+          echo "New cache version: $VERSION"
+
+      # ------------------------------------------------------------
+      # 保存更新后的缓存（仅增量更新后）
+      # ------------------------------------------------------------
+      - name: Save updated cache
+        if: github.event_name == 'repository_dispatch'
+        uses: actions/cache/save@v4
+        with:
+          path: src/generated/cache
+          key: ${{ runner.os }}-content-cache-${{ hashFiles('src/generated/cache/.version') }}
+
+      # ------------------------------------------------------------
+      # 全量缓存构建（用于非 webhook 事件）
+      # ------------------------------------------------------------
+      - name: Full cache build (non-webhook)
+        if: github.event_name != 'repository_dispatch'
+        run: |
+          echo "Running full cache build..."
+          npm run analyze-schema
+          npm run generate-correct-queries
+          npm run codegen-dynamic
+          npm run generate-config
+          npm run build-cache
+          # 生成 .version 文件（若 build-cache 未生成）
+          mkdir -p src/generated/cache
+          echo "${{ github.run_id }}-$(date +%s)" > src/generated/cache/.version
+
+      # ------------------------------------------------------------
+      # 公共步骤（所有路径均需执行）
+      # ------------------------------------------------------------
       - name: Test Strapi GraphQL connectivity
         run: |
           echo "Testing GraphQL endpoint connectivity with Bearer token..."
@@ -54,9 +138,6 @@ jobs:
             -d '{"query": "query { __typename }"}' \
             -w "\nHTTP Status: %{http_code}\n"
           echo "Connectivity test completed."
-
-      - name: Analyze schema
-        run: npm run analyze-schema
 
       - name: Generate GraphQL queries
         run: npm run generate-correct-queries
@@ -80,9 +161,6 @@ jobs:
 
       - name: Generate i18n configuration
         run: npm run generate-config
-
-      - name: Build content cache
-        run: npm run build-cache
 
       - name: Build Astro site
         run: npm run build

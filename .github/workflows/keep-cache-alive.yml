@@ -2,9 +2,9 @@ name: Keep Cache Alive
 
 on:
   schedule:
-    # 每周日凌晨 2:00（UTC 时间）执行
-    - cron: '0 2 * * 0'
-  workflow_dispatch:   # 允许手动触发
+    - cron: '0 2 * * 3'   # 每周三凌晨 2:00 (UTC)
+    - cron: '0 2 * * 0'   # 每周日凌晨 2:00 (UTC)
+  workflow_dispatch:       # 允许手动触发
 
 jobs:
   refresh-cache:

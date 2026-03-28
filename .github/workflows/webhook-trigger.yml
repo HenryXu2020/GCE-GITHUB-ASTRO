@@ -47,7 +47,6 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: src/generated/cache
-          # key 使用 run_id 保证唯一性，但通常不会精确匹配，目的是通过 restore-keys 获取最近缓存
           key: ${{ runner.os }}-content-cache-${{ github.run_id }}
           restore-keys: |
             ${{ runner.os }}-content-cache-
@@ -147,8 +146,18 @@ jobs:
       - name: Generate i18n configuration
         run: npm run generate-config
 
+      # -----------------------------------------------------------------
+      # 构建 Astro 站点（区分 webhook 与其它事件）
+      # -----------------------------------------------------------------
       - name: Build Astro site
-        run: npm run build
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            echo "Using incremental cache, skipping full cache build..."
+            npx astro build
+          else
+            echo "Running full build with cache regeneration..."
+            npm run build
+          fi
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

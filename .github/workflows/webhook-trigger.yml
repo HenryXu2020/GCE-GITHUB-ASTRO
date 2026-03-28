@@ -41,15 +41,16 @@ jobs:
         run: npm ci
 
       # -----------------------------------------------------------------
-      # 缓存恢复（始终尝试恢复，使用固定 key）
+      # 缓存恢复：使用动态键 + 前缀匹配，获取最近一次保存的缓存
       # -----------------------------------------------------------------
       - name: Restore content cache
         uses: actions/cache/restore@v4
         with:
           path: src/generated/cache
-          key: ${{ runner.os }}-content-cache
+          # key 使用 run_id 保证唯一性，但通常不会精确匹配，目的是通过 restore-keys 获取最近缓存
+          key: ${{ runner.os }}-content-cache-${{ github.run_id }}
           restore-keys: |
-            ${{ runner.os }}-content-cache
+            ${{ runner.os }}-content-cache-
 
       # -----------------------------------------------------------------
       # 增量更新路径（仅用于 repository_dispatch 事件）
@@ -65,7 +66,6 @@ jobs:
             MODEL=$(echo "$event" | jq -r '.model')
             ID=$(echo "$event" | jq -r '.id')
             ACTION=$(echo "$event" | jq -r '.action')
-            # locales 可能为空数组，此时传给脚本的 --locale 会省略（脚本会使用默认 locale）
             LOCALES=$(echo "$event" | jq -r '.locales[]?')
             if [ -z "$LOCALES" ]; then
               echo "Updating $MODEL/$ID ($ACTION) with default locale"
@@ -87,14 +87,14 @@ jobs:
           echo "Incremental updates completed."
 
       # -----------------------------------------------------------------
-      # 保存更新后的缓存（仅当增量更新执行后）
+      # 保存更新后的缓存：使用动态键（含 run_id），避免键冲突
       # -----------------------------------------------------------------
       - name: Save updated cache
         if: github.event_name == 'repository_dispatch'
         uses: actions/cache/save@v4
         with:
           path: src/generated/cache
-          key: ${{ runner.os }}-content-cache
+          key: ${{ runner.os }}-content-cache-${{ github.run_id }}
 
       # -----------------------------------------------------------------
       # 全量构建路径（用于非 repository_dispatch 事件）

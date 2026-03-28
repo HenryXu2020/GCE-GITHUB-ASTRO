@@ -13,10 +13,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore content cache (updates last access time)
+      # 恢复最新缓存（通过前缀匹配），刷新其访问时间，防止被清理
+      - name: Restore latest content cache (updates last access time)
         uses: actions/cache/restore@v4
         with:
           path: src/generated/cache
-          key: ${{ runner.os }}-content-cache
+          # key 可以任意填写，只要不实际存在，restore-keys 会匹配最近使用的缓存
+          key: ${{ runner.os }}-content-cache-dummy
           restore-keys: |
-            ${{ runner.os }}-content-cache
+            ${{ runner.os }}-content-cache-

@@ -1,0 +1,22 @@
+name: Keep Cache Alive
+
+on:
+  schedule:
+    # 每周日凌晨 2:00（UTC 时间）执行
+    - cron: '0 2 * * 0'
+  workflow_dispatch:   # 允许手动触发
+
+jobs:
+  refresh-cache:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore content cache (updates last access time)
+        uses: actions/cache/restore@v4
+        with:
+          path: src/generated/cache
+          key: ${{ runner.os }}-content-cache
+          restore-keys: |
+            ${{ runner.os }}-content-cache

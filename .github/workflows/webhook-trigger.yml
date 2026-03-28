@@ -3,8 +3,8 @@ name: Handle Strapi Webhook
 on:
   repository_dispatch:
     types: [strapi_batch, strapi_trigger-test]
-  workflow_dispatch:
-  push:
+  workflow_dispatch:   # 手动触发（用于测试全量构建）
+  push:                # 可选：代码推送时全量构建
     branches:
       - main
       - master
@@ -40,21 +40,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # ------------------------------------------------------------
-      # 缓存恢复（所有分支共享）
-      # ------------------------------------------------------------
+      # -----------------------------------------------------------------
+      # 缓存恢复（始终尝试恢复，使用固定 key）
+      # -----------------------------------------------------------------
       - name: Restore content cache
-        id: cache-restore
         uses: actions/cache/restore@v4
         with:
           path: src/generated/cache
-          key: ${{ runner.os }}-content-cache-${{ hashFiles('src/generated/cache/.version') }}
+          key: ${{ runner.os }}-content-cache
           restore-keys: |
-            ${{ runner.os }}-content-cache-
+            ${{ runner.os }}-content-cache
 
-      # ------------------------------------------------------------
+      # -----------------------------------------------------------------
       # 增量更新路径（仅用于 repository_dispatch 事件）
-      # ------------------------------------------------------------
+      # -----------------------------------------------------------------
       - name: Process incremental updates
         if: github.event_name == 'repository_dispatch'
         env:
@@ -66,6 +65,7 @@ jobs:
             MODEL=$(echo "$event" | jq -r '.model')
             ID=$(echo "$event" | jq -r '.id')
             ACTION=$(echo "$event" | jq -r '.action')
+            # locales 可能为空数组，此时传给脚本的 --locale 会省略（脚本会使用默认 locale）
             LOCALES=$(echo "$event" | jq -r '.locales[]?')
             if [ -z "$LOCALES" ]; then
               echo "Updating $MODEL/$ID ($ACTION) with default locale"
@@ -86,31 +86,19 @@ jobs:
           done
           echo "Incremental updates completed."
 
-      # ------------------------------------------------------------
-      # 更新缓存版本文件（仅增量更新后）
-      # ------------------------------------------------------------
-      - name: Update cache version (incremental)
-        if: github.event_name == 'repository_dispatch'
-        run: |
-          # 生成新的版本标识（基于当前时间戳 + 随机数，确保唯一）
-          VERSION=$(date +%s)-${{ github.run_id }}
-          mkdir -p src/generated/cache
-          echo "$VERSION" > src/generated/cache/.version
-          echo "New cache version: $VERSION"
-
-      # ------------------------------------------------------------
-      # 保存更新后的缓存（仅增量更新后）
-      # ------------------------------------------------------------
+      # -----------------------------------------------------------------
+      # 保存更新后的缓存（仅当增量更新执行后）
+      # -----------------------------------------------------------------
       - name: Save updated cache
         if: github.event_name == 'repository_dispatch'
         uses: actions/cache/save@v4
         with:
           path: src/generated/cache
-          key: ${{ runner.os }}-content-cache-${{ hashFiles('src/generated/cache/.version') }}
+          key: ${{ runner.os }}-content-cache
 
-      # ------------------------------------------------------------
-      # 全量缓存构建（用于非 webhook 事件）
-      # ------------------------------------------------------------
+      # -----------------------------------------------------------------
+      # 全量构建路径（用于非 repository_dispatch 事件）
+      # -----------------------------------------------------------------
       - name: Full cache build (non-webhook)
         if: github.event_name != 'repository_dispatch'
         run: |
@@ -120,13 +108,10 @@ jobs:
           npm run codegen-dynamic
           npm run generate-config
           npm run build-cache
-          # 生成 .version 文件（若 build-cache 未生成）
-          mkdir -p src/generated/cache
-          echo "${{ github.run_id }}-$(date +%s)" > src/generated/cache/.version
 
-      # ------------------------------------------------------------
-      # 公共步骤（所有路径均需执行）
-      # ------------------------------------------------------------
+      # -----------------------------------------------------------------
+      # 公共步骤：GraphQL 类型生成与站点构建
+      # -----------------------------------------------------------------
       - name: Test Strapi GraphQL connectivity
         run: |
           echo "Testing GraphQL endpoint connectivity with Bearer token..."

@@ -7,18 +7,26 @@ on:
   workflow_dispatch:       # 允许手动触发
 
 jobs:
-  refresh-cache:
+  refresh-caches:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 恢复最新缓存（通过前缀匹配），刷新其访问时间，防止被清理
-      - name: Restore latest content cache (updates last access time)
+      # 1. 刷新内容缓存（使用前缀匹配，获取最新）
+      - name: Restore latest content cache
         uses: actions/cache/restore@v4
         with:
           path: src/generated/cache
-          # key 可以任意填写，只要不实际存在，restore-keys 会匹配最近使用的缓存
           key: ${{ runner.os }}-content-cache-dummy
           restore-keys: |
             ${{ runner.os }}-content-cache-
+
+      # 2. 刷新 npm 依赖缓存（使用固定键，该键基于 package-lock.json 哈希）
+      - name: Restore npm dependencies cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.npm
+          key: node-cache-Linux-x64-npm-187d5ebee4fc8d6f58cd460df5d8016e3a59081239cf7ea470fcf1a0365ba919
+          restore-keys: |
+            node-cache-Linux-x64-npm-

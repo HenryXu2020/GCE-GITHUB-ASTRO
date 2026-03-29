@@ -6,6 +6,12 @@ on:
     - cron: '0 2 * * 0'   # 每周日凌晨 2:00 (UTC)
   workflow_dispatch:       # 允许手动触发
 
+env:
+  NODE_VERSION: '22'
+  PUBLIC_STRAPI_API_URL: ${{ secrets.STRAPI_API_URL }}
+  PUBLIC_STRAPI_API_TOKEN: ${{ secrets.STRAPI_API_TOKEN }}
+  CI_STRAPI_INTROSPECTION_TOKEN: ${{ secrets.CI_STRAPI_INTROSPECTION_TOKEN }}
+
 jobs:
   refresh-caches:
     runs-on: ubuntu-latest
@@ -13,16 +19,76 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 1. 刷新内容缓存（使用前缀匹配，获取最新）
+      - name: Setup Node.js (for jq, optional)
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Ensure jq is available
+        run: |
+          if ! command -v jq &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y jq
+          fi
+          jq --version
+
+      # -----------------------------------------------------------------
+      # 动态生成内容缓存 Key（复用 webhook-trigger.yml 逻辑）
+      # -----------------------------------------------------------------
+      - name: Generate cache key for refresh
+        id: cache-key
+        run: |
+          # 分支名标准化
+          CACHE_BRANCH="${GITHUB_REF_NAME//\//-}"
+          [ -z "$CACHE_BRANCH" ] && CACHE_BRANCH="main"
+          echo "CACHE_BRANCH=$CACHE_BRANCH" >> $GITHUB_ENV
+          
+          # 计算 Schema 哈希
+          SCHEMA_HASH=$(curl -s -f -X POST "${{ secrets.STRAPI_API_URL }}/graphql" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.STRAPI_API_TOKEN }}" \
+            -d '{"query": "query IntrospectionQuery { __schema { types { name } } }"}' \
+            2>/dev/null | jq -r '.data.__schema.types[].name' 2>/dev/null | sort | md5sum | cut -d' ' -f1 || echo "fetch_failed")
+          
+          if [ "$SCHEMA_HASH" = "fetch_failed" ] || [ -z "$SCHEMA_HASH" ]; then
+            SCHEMA_HASH="fallback"
+          fi
+          SCHEMA_PREFIX="${SCHEMA_HASH:0:12}"
+          echo "SCHEMA_PREFIX=$SCHEMA_PREFIX" >> $GITHUB_ENV
+          
+          # 计算内容哈希（基于现有缓存文件，若目录为空则使用 "empty"）
+          mkdir -p src/generated/cache
+          if [ -d src/generated/cache ] && [ "$(ls -A src/generated/cache 2>/dev/null)" ]; then
+            CONTENT_HASH=$(find src/generated/cache -name "*.json" -exec md5sum {} \; 2>/dev/null | sort | md5sum | cut -d' ' -f1 | cut -c1-8)
+          else
+            CONTENT_HASH="empty"
+          fi
+          echo "CONTENT_HASH=$CONTENT_HASH" >> $GITHUB_ENV
+          
+          # 生成最终 Key 和前缀
+          FINAL_KEY="${{ runner.os }}-content-${CACHE_BRANCH}-${SCHEMA_PREFIX}-${CONTENT_HASH}"
+          RESTORE_PREFIX="${{ runner.os }}-content-${CACHE_BRANCH}-${SCHEMA_PREFIX}-"
+          echo "cache_key=$FINAL_KEY" >> $GITHUB_OUTPUT
+          echo "cache_restore_prefix=$RESTORE_PREFIX" >> $GITHUB_OUTPUT
+          echo "::notice::Using cache key: $FINAL_KEY"
+
+      # -----------------------------------------------------------------
+      # 恢复最新内容缓存（使用前缀匹配，刷新 Last used 时间）
+      # -----------------------------------------------------------------
       - name: Restore latest content cache
         uses: actions/cache/restore@v4
         with:
-          path: src/generated/cache
-          key: ${{ runner.os }}-content-cache-dummy
+          path: |
+            src/generated/cache
+            src/generated/schema-hash.txt
+          key: ${{ steps.cache-key.outputs.cache_key }}
           restore-keys: |
-            ${{ runner.os }}-content-cache-
+            ${{ steps.cache-key.outputs.cache_restore_prefix }}
+            ${{ runner.os }}-content-${{ env.CACHE_BRANCH }}-
+            ${{ runner.os }}-content-
 
-      # 2. 刷新 npm 依赖缓存（使用固定键，该键基于 package-lock.json 哈希）
+      # -----------------------------------------------------------------
+      # 刷新 npm 依赖缓存（基于 package-lock.json 哈希，保持不变）
+      # -----------------------------------------------------------------
       - name: Restore npm dependencies cache
         uses: actions/cache/restore@v4
         with:
@@ -30,3 +96,16 @@ jobs:
           key: node-cache-Linux-x64-npm-187d5ebee4fc8d6f58cd460df5d8016e3a59081239cf7ea470fcf1a0365ba919
           restore-keys: |
             node-cache-Linux-x64-npm-
+
+      # -----------------------------------------------------------------
+      # 可选：验证恢复结果（仅用于调试）
+      # -----------------------------------------------------------------
+      - name: Verify cache restoration
+        run: |
+          echo "Content cache key used: ${{ steps.cache-key.outputs.cache_key }}"
+          if [ -f src/generated/cache/MANIFEST.json ]; then
+            echo "✅ Content cache restored successfully"
+            cat src/generated/cache/MANIFEST.json
+          else
+            echo "⚠️ No content cache found (may be first run)"
+          fi

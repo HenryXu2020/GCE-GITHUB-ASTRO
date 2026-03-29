@@ -6,8 +6,7 @@ import { locales, type Locale, getLanguageName } from '@/generated/i18n-config';
 import { getAllContent } from '@/lib/content-cache';
 import { t } from '@/i18n/dict';
 import type { Blog } from '@/generated/graphql-types';
-import { Image } from 'astro:assets';
-import { getFullImageUrl } from '@/lib/env'; // 统一导入
+import { getFullImageUrl } from '@/lib/env';
 
 export async function getStaticPaths() {
   const blogMap = getAllContent<Blog>('blog');
@@ -46,22 +45,26 @@ const otherLanguages = (blog.localizations || [])
     documentId: loc.documentId,
   }));
 
-// 预计算需要翻译的文本
+// 处理分类数据（支持数组或单个对象）
+const categories = Array.isArray(blog.categories) ? blog.categories : (blog.categories ? [blog.categories] : []);
+
+// 预计算翻译值
 const translations = {
   availableIn: t(locale, 'common.availableIn'),
   backToBlog: t(locale, 'common.backToBlog'),
   lastUpdated: t(locale, 'common.lastUpdated'),
   minRead: t(locale, 'common.minRead'),
+  categories: t(locale, 'common.categories'),
 };
 
-// 使用统一函数获取完整图片 URL
+// 获取完整图片 URL（已包含 Cloudinary 优化参数，如 f_auto,q_auto,w_1200 等）
 const coverImageUrl = getFullImageUrl(blog.cover?.url);
 const coverAlt = blog.cover?.alternativeText || blog.title;
 ---
 
 <BaseLayout
   title={blog.title}
-  description={blog.excerpt || blog.title}
+  description={blog.description || blog.title}
   pageType="article"
   locale={locale}
   image={coverImageUrl ? { src: coverImageUrl, alt: coverAlt } : undefined}
@@ -97,11 +100,31 @@ const coverAlt = blog.cover?.alternativeText || blog.title;
             {Math.ceil((blog.content || []).length / 100)} {translations.minRead}
           </span>
         </div>
+
+        <!-- 分类标签 -->
+        {categories.length > 0 && (
+          <div class="flex items-center gap-2">
+            <span class="text-sm text-gray-500 dark:text-gray-400">{translations.categories}:</span>
+            <div class="flex flex-wrap gap-2">
+              {categories.map((cat: any) => (
+                <a
+                  key={cat.documentId}
+                  href={`/${locale}/blog/category/${cat.slug}`}
+                  class="px-3 py-1 text-xs rounded-full bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                  title={cat.title}
+                >
+                  {cat.title}
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
+      <!-- 封面图片：使用标准 <img> 标签，利用 Cloudinary 自动优化（需在 getFullImageUrl 中实现） -->
       {coverImageUrl && (
         <div class="mb-8">
-          <Image
+          <img
             src={coverImageUrl}
             alt={coverAlt}
             width={1200}
@@ -109,7 +132,6 @@ const coverAlt = blog.cover?.alternativeText || blog.title;
             class="w-full h-auto max-h-96 object-cover rounded-xl shadow-lg"
             loading="eager"
             decoding="async"
-            format="webp"
           />
           {blog.cover?.alternativeText && (
             <p class="text-center text-sm text-gray-500 dark:text-gray-400 mt-2">

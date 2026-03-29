@@ -13,7 +13,8 @@
     "lastUpdated": "Last updated",
     "by": "by",
     "on": "on",
-    "minRead": "min read"
+    "minRead": "min read",
+    "categories": "Categories"
   },
   "home": {
     "welcome": "Vitesse theme",
@@ -29,12 +30,5 @@
     "title": "404 - Page Not Found",
     "description": "Sorry, we couldn't find what you were looking for.",
     "returnHome": "Return Home"
-  },
-  "navigation": {
-    "home": "Home",
-    "blog": "Blog",
-    "projects": "Projects",
-    "notes": "Notes",
-    "talks": "Talks"
   }
 }

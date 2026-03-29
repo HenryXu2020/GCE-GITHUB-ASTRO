@@ -13,7 +13,8 @@
     "lastUpdated": "Dernière mise à jour",
     "by": "par",
     "on": "le",
-    "minRead": "min de lecture"
+    "minRead": "min de lecture",
+    "categories": "Catégories"
   },
   "home": {
     "welcome": "Thème Vitesse",
@@ -29,12 +30,5 @@
     "title": "404 - Page Non Trouvée",
     "description": "Désolé, nous n'avons pas trouvé ce que vous cherchiez.",
     "returnHome": "Retour à l'accueil"
-  },
-  "navigation": {
-    "home": "Accueil",
-    "blog": "Blog",
-    "projects": "Projets",
-    "notes": "Notes",
-    "talks": "Discours"
   }
 }

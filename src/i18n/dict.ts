@@ -20,6 +20,7 @@ export interface I18nDict {
     by: string;
     on: string;
     minRead: string;
+    categories: string;          // 新增：分类标签
   };
   home: {
     welcome: string;
@@ -36,13 +37,6 @@ export interface I18nDict {
     description: string;
     returnHome: string;
   };
-  navigation: {
-    home: string;
-    blog: string;
-    projects: string;
-    notes: string;
-    talks: string;
-  };
 }
 
 /**
@@ -50,7 +44,6 @@ export interface I18nDict {
  * 使用 process.cwd() 定位项目根目录，确保构建时能正确读取源码中的 JSON
  */
 function loadTranslations(locale: string): I18nDict {
-  // 构建翻译文件所在目录的绝对路径
   const translationsDir = path.join(process.cwd(), 'src/i18n/translations');
   const filePath = path.join(translationsDir, `${locale}.json`);
 
@@ -87,7 +80,6 @@ export function t(locale: Locale, key: string, vars?: Record<string, string>): s
   for (const k of keys) {
     if (value === undefined) {
       console.warn(`[i18n] Missing key: ${key} in locale: ${locale}`);
-      // 尝试回退到默认语言
       if (locale !== defaultLocale) {
         return t(defaultLocale, key, vars);
       }

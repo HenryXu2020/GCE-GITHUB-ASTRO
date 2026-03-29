@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # NODE_VERSION 已移除，改用 actions/setup-node 直接锁定版本
+  NODE_VERSION: '22'                # 锁定 LTS 版本
   PUBLIC_STRAPI_API_URL: ${{ secrets.STRAPI_API_URL }}
   PUBLIC_STRAPI_API_TOKEN: ${{ secrets.STRAPI_API_TOKEN }}
   CI_STRAPI_INTROSPECTION_TOKEN: ${{ secrets.CI_STRAPI_INTROSPECTION_TOKEN }}
@@ -25,11 +25,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 显式锁定 Node.js 版本为 LTS 22.14.0，避免运行器默认升级到 24
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22.14.0'
+          node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
       - name: Install dependencies
@@ -48,50 +47,40 @@ jobs:
       - name: Generate cache key components
         id: cache-key
         run: |
-          # 分支名标准化（替换 / 为 -），并提供兜底值
+          # 分支名标准化（替换 / 为 -）
           CACHE_BRANCH="${GITHUB_REF_NAME//\//-}"
-          if [ -z "$CACHE_BRANCH" ]; then
-            echo "::warning::GITHUB_REF_NAME is empty, using 'main' as fallback"
-            CACHE_BRANCH="main"
-          fi
           echo "CACHE_BRANCH=$CACHE_BRANCH" >> $GITHUB_ENV
-          echo "::debug::CACHE_BRANCH=$CACHE_BRANCH"
 
           # 计算远程 schema 哈希（使用 introspection）
-          echo "::group::Fetching remote schema hash"
           REMOTE_HASH=$(curl -s -f -X POST "${{ secrets.STRAPI_API_URL }}/graphql" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.STRAPI_API_TOKEN }}" \
             -d '{"query": "query IntrospectionQuery { __schema { types { name } } }"}' \
             2>/dev/null | jq -r '.data.__schema.types[].name' 2>/dev/null | sort | md5sum | cut -d' ' -f1 || echo "fetch_failed")
-          echo "::endgroup::"
 
           if [ "$REMOTE_HASH" != "fetch_failed" ] && [ -n "$REMOTE_HASH" ]; then
             echo "CACHE_HASH=$REMOTE_HASH" >> $GITHUB_ENV
+            echo "Remote schema hash: $REMOTE_HASH"
             echo "remote_hash=$REMOTE_HASH" >> $GITHUB_OUTPUT
             echo "$REMOTE_HASH" > src/generated/schema-hash.txt
-            echo "::debug::Using remote schema hash: $REMOTE_HASH"
           else
-            echo "::warning::Remote schema fetch failed, using fallback"
-            # 降级：检查本地内容目录是否有文件
+            echo "Failed to fetch remote schema, using fallback hash"
+            # 加固：检查 src/content 是否存在且有内容
+            FALLBACK_HASH=""
             if [ -d src/content ] && [ "$(find src/content -type f \( -name "*.md" -o -name "*.mdx" -o -name "*.json" \) 2>/dev/null | head -n1)" ]; then
               find src/content -type f \( -name "*.md" -o -name "*.mdx" -o -name "*.json" \) 2>/dev/null | sort | xargs md5sum 2>/dev/null | md5sum | cut -d' ' -f1 > fallback-hash.txt
               FALLBACK_HASH=$(cat fallback-hash.txt)
             else
-              # 无内容文件时，使用固定标记 + 日期
+              # 无内容文件时，使用固定标记 + 日期避免哈希碰撞
               FALLBACK_HASH="no-content-$(date +%Y%m%d)"
               echo "$FALLBACK_HASH" > fallback-hash.txt
             fi
             echo "CACHE_HASH=$FALLBACK_HASH" >> $GITHUB_ENV
             echo "remote_hash=$FALLBACK_HASH" >> $GITHUB_OUTPUT
+            # 写入本地哈希文件供后续比较
             echo "$FALLBACK_HASH" > src/generated/schema-hash.txt
-            echo "::debug::Using fallback hash: $FALLBACK_HASH"
           fi
-
-          # 输出最终缓存键以便调试
-          FINAL_KEY="${{ runner.os }}-content-$CACHE_BRANCH-$CACHE_HASH"
-          echo "::debug::Final cache key: $FINAL_KEY"
-          echo "cache_key=$FINAL_KEY" >> $GITHUB_OUTPUT
+          echo "Cache key: ${{ runner.os }}-content-$CACHE_BRANCH-$CACHE_HASH"
 
       # -----------------------------------------------------------------
       # 缓存恢复（使用动态键 + 前缀匹配），同时缓存 schema-hash.txt
@@ -103,7 +92,7 @@ jobs:
           path: |
             src/generated/cache
             src/generated/schema-hash.txt
-          key: ${{ steps.cache-key.outputs.cache_key }}
+          key: ${{ runner.os }}-content-${{ env.CACHE_BRANCH }}-${{ env.CACHE_HASH }}
           restore-keys: |
             ${{ runner.os }}-content-${{ env.CACHE_BRANCH }}-
             ${{ runner.os }}-content-
@@ -114,27 +103,19 @@ jobs:
       - name: Validate cache and fallback
         run: |
           mkdir -p src/generated/cache
-          # 检查缓存目录是否为空
-          if [ ! -d src/generated/cache ] || [ -z "$(ls -A src/generated/cache 2>/dev/null)" ]; then
-            echo "::warning::Cache directory is empty, will fallback to full build"
-            echo "FORCE_FULL_CACHE=true" >> $GITHUB_ENV
-          elif [ ! -f src/generated/cache/MANIFEST.json ]; then
+          if [ ! -f src/generated/cache/MANIFEST.json ]; then
             echo "::warning::Cache manifest missing, will fallback to full build"
             echo "FORCE_FULL_CACHE=true" >> $GITHUB_ENV
-          elif ! jq -e '.version' src/generated/cache/MANIFEST.json > /dev/null 2>&1; then
-            echo "::warning::Cache manifest invalid, will fallback to full build"
-            echo "FORCE_FULL_CACHE=true" >> $GITHUB_ENV
+          else
+            if ! jq -e '.version' src/generated/cache/MANIFEST.json > /dev/null 2>&1; then
+              echo "::warning::Cache manifest invalid, will fallback to full build"
+              echo "FORCE_FULL_CACHE=true" >> $GITHUB_ENV
+            fi
           fi
 
       # -----------------------------------------------------------------
-      # 🔑 关键修复：提前生成 i18n 配置，供后续 update-cache-entry.ts 使用
-      # -----------------------------------------------------------------
-      - name: Generate i18n configuration (early)
-        run: npm run generate-config
-
-      # -----------------------------------------------------------------
       # 增量更新路径（仅用于 repository_dispatch 事件且缓存有效）
-      # 使用进程替换避免子 shell 错误传播问题
+      # 使用 set -euo pipefail 确保错误及时终止，并安全迭代 locales
       # -----------------------------------------------------------------
       - name: Process incremental updates
         if: github.event_name == 'repository_dispatch' && env.FORCE_FULL_CACHE != 'true'
@@ -144,10 +125,7 @@ jobs:
           set -euo pipefail
 
           echo "Processing incremental updates..."
-          FAILED=0
-
-          # 使用进程替换，确保 while 循环在主 shell 中执行
-          while IFS= read -r event; do
+          echo "$EVENTS" | jq -c '.[]' | while read -r event; do
             MODEL=$(echo "$event" | jq -r '.model')
             ID=$(echo "$event" | jq -r '.id')
             ACTION=$(echo "$event" | jq -r '.action')
@@ -155,18 +133,15 @@ jobs:
             # 参数校验
             if ! [[ "$MODEL" =~ ^[a-z][a-z0-9-]*$ ]]; then
               echo "::error::Invalid model name: $MODEL"
-              FAILED=1
-              continue
+              exit 1
             fi
             if ! [[ "$ID" =~ ^[0-9a-f-]+$ ]]; then
               echo "::error::Invalid entry ID: $ID"
-              FAILED=1
-              continue
+              exit 1
             fi
             if ! [[ "$ACTION" =~ ^(publish|unpublish|delete|update|create)$ ]]; then
               echo "::error::Invalid action: $ACTION"
-              FAILED=1
-              continue
+              exit 1
             fi
 
             # 安全处理 locales：使用 while read 防止空格拆分
@@ -187,10 +162,7 @@ jobs:
                   --event "$ACTION"
               done
             fi
-          done < <(echo "$EVENTS" | jq -c '.[]')
-
-          # 如果有任何校验失败，终止步骤
-          [ "$FAILED" -eq 0 ] || exit 1
+          done
           echo "Incremental updates completed."
 
           # 增量更新成功后，更新缓存 manifest 中的最后更新时间
@@ -211,7 +183,7 @@ jobs:
           npm run analyze-schema
           npm run generate-correct-queries
           npm run codegen-dynamic
-          npm run generate-config   # 已生成，但再执行一次也无妨
+          npm run generate-config
           npm run build-cache
           # 生成缓存清单文件
           echo '{"version":1}' > src/generated/cache/MANIFEST.json
@@ -268,6 +240,9 @@ jobs:
           fi
           echo "✅ Codegen output verified"
 
+      - name: Generate i18n configuration
+        run: npm run generate-config
+
       # -----------------------------------------------------------------
       # 构建 Astro 站点
       # -----------------------------------------------------------------
@@ -297,6 +272,7 @@ jobs:
 
       # -----------------------------------------------------------------
       # 保存更新后的缓存（仅在构建成功后执行，并容忍 key 冲突）
+      # 缓存路径包含 cache 目录和 schema-hash.txt
       # -----------------------------------------------------------------
       - name: Save content cache (post-build)
         if: success()
@@ -306,7 +282,7 @@ jobs:
           path: |
             src/generated/cache
             src/generated/schema-hash.txt
-          key: ${{ steps.cache-key.outputs.cache_key }}
+          key: ${{ runner.os }}-content-${{ env.CACHE_BRANCH }}-${{ env.CACHE_HASH }}
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

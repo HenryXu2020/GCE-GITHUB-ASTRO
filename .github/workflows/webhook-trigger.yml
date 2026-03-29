@@ -50,6 +50,10 @@ jobs:
       # -----------------------------------------------------------------
       # 增量更新路径（仅用于 repository_dispatch 事件）
       # -----------------------------------------------------------------
+      - name: Generate i18n config for incremental updates
+        if: github.event_name == 'repository_dispatch'
+        run: npm run generate-config
+
       - name: Process incremental updates
         if: github.event_name == 'repository_dispatch'
         env:

@@ -1,9 +1,5 @@
 {
   "common": {
-    "blog": "Blog",
-    "projects": "Projects",
-    "notes": "Notes",
-    "talks": "Talks",
     "readMore": "Read more →",
     "backToBlog": "← Back to blog",
     "availableIn": "Available in other languages",

@@ -1,6 +1,5 @@
 ---
 import BaseLayout from '@/layouts/BaseLayout.astro';
-import { t } from '@/i18n/dict';
 import type { Locale } from '@/types';
 import { locales } from '@/generated/i18n-config';
 
@@ -11,19 +10,50 @@ export async function getStaticPaths() {
 }
 
 const currentLocale = Astro.currentLocale as Locale;
+
+// ✅ 静态文本对象 - 完全独立于翻译文件
+const navLinks = {
+  en: { blog: 'Blog', projects: 'Projects', notes: 'Notes' },
+  es: { blog: 'Blog', projects: 'Proyectos', notes: 'Notas' },
+  fr: { blog: 'Blog', projects: 'Projets', notes: 'Notes' },
+} as const;
+
+const prompts = {
+  en: 'Or try one of these pages:',
+  es: 'O prueba una de estas páginas:',
+  fr: 'Ou essayez l\'une de ces pages:',
+} as const;
+
+const titles = {
+  en: '404 - Page Not Found',
+  es: '404 - Página No Encontrada',
+  fr: '404 - Page Non Trouvée',
+} as const;
+
+const descriptions = {
+  en: 'Sorry, we couldn\'t find what you were looking for.',
+  es: 'Lo sentimos, no pudimos encontrar lo que buscabas.',
+  fr: 'Désolé, nous n\'avons pas trouvé ce que vous cherchiez.',
+} as const;
+
+const returnHome = {
+  en: 'Return Home',
+  es: 'Volver al Inicio',
+  fr: 'Retour à l\'accueil',
+} as const;
 ---
 
 <BaseLayout
-  title={t(currentLocale, 'notFound.title')}
-  description={t(currentLocale, 'notFound.description')}
+  title={titles[currentLocale]}
+  description={descriptions[currentLocale]}
   locale={currentLocale}
 >
   <div class="min-h-[70vh] flex flex-col items-center justify-center text-center px-4">
     <div class="mb-8">
       <div class="text-9xl font-bold text-gray-300 dark:text-gray-700 mb-2">404</div>
-      <h1 class="text-3xl font-bold mb-4">{t(currentLocale, 'notFound.title')}</h1>
+      <h1 class="text-3xl font-bold mb-4">{titles[currentLocale]}</h1>
       <p class="text-xl text-gray-600 dark:text-gray-400 max-w-md mx-auto">
-        {t(currentLocale, 'notFound.description')}
+        {descriptions[currentLocale]}
       </p>
     </div>
 
@@ -32,24 +62,20 @@ const currentLocale = Astro.currentLocale as Locale;
         href={`/${currentLocale}`}
         class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 transition-colors"
       >
-        {t(currentLocale, 'notFound.returnHome')}
+        {returnHome[currentLocale]}
       </a>
 
       <div class="text-sm text-gray-500 dark:text-gray-400">
-        <p class="mb-2">
-          {currentLocale === 'en'
-            ? 'Or try one of these pages:'
-            : 'O prueba una de estas páginas:'}
-        </p>
+        <p class="mb-2">{prompts[currentLocale]}</p>
         <div class="flex flex-wrap justify-center gap-3">
           <a href={`/${currentLocale}/blog`} class="text-blue-600 dark:text-blue-400 hover:underline">
-            {t(currentLocale, 'navigation.blog')}
+            {navLinks[currentLocale].blog}
           </a>
           <a href={`/${currentLocale}/projects`} class="text-blue-600 dark:text-blue-400 hover:underline">
-            {t(currentLocale, 'navigation.projects')}
+            {navLinks[currentLocale].projects}
           </a>
           <a href={`/${currentLocale}/notes`} class="text-blue-600 dark:text-blue-400 hover:underline">
-            {t(currentLocale, 'navigation.notes')}
+            {navLinks[currentLocale].notes}
           </a>
         </div>
       </div>

@@ -4,7 +4,7 @@ import siteConfig from '@/site-config';
 import ThemeToggle from './ThemeToggle.vue';
 import Menu from './Menu.astro';
 import { getMenuTree } from '@/lib/menu';
-import { t, type Locale } from '@/i18n/dict';
+import { type Locale } from '@/i18n/dict';
 import { getLocalizedUrl, getLanguageName } from '@/i18n/utils';
 import { locales } from '@/generated/i18n-config';
 
@@ -16,8 +16,6 @@ const { currentLocale = 'en' as Locale } = Astro.props;
 
 // ========== 动态菜单逻辑 ==========
 const menuTree = getMenuTree(currentLocale);
-
-// 分离按钮项和普通菜单项
 const buttonItems = menuTree.filter(item => item.isButton);
 const navItems = menuTree.filter(item => !item.isButton);
 
@@ -48,7 +46,7 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
         <a
           href={getLocalizedUrl(new URL('/', Astro.url.origin), currentLocale)}
           class="flex items-center space-x-3 group"
-          aria-label={t(currentLocale, 'navigation.home')}
+          aria-label={siteConfig.title}
         >
           <img
             width="32"
@@ -71,11 +69,9 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
 
       <!-- Desktop Navigation -->
       <nav class="hidden md:flex items-center space-x-2">
-        <!-- 动态导航菜单（水平模式） -->
         {navItems.length > 0 ? (
           <Menu items={navItems} currentLocale={currentLocale} horizontal={true} />
         ) : (
-          /* 降级到硬编码链接 */
           <>
             {fallbackLinks.map((link) => (
               <a
@@ -90,7 +86,6 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
           </>
         )}
 
-        <!-- 按钮项（如 Contact Us）独立渲染 -->
         {buttonItems.map(item => {
           const href = item.url?.startsWith('http')
             ? item.url
@@ -130,8 +125,7 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
               </a>
             );
           })}
-          
-          <!-- 社交链接 -->
+
           {siteConfig.socialLinks
             .filter(link => link.header && link.href)
             .map((link) => (
@@ -148,8 +142,7 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
               </a>
             ))
           }
-          
-          <!-- RSS -->
+
           <a
             href="/rss.xml"
             target="_blank"
@@ -159,13 +152,12 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
           >
             <i class="i-ri-rss-line text-lg" />
           </a>
-          
-          <!-- 主题切换器 -->
+
           <ThemeToggle client:load />
         </div>
       </nav>
 
-      <!-- Mobile Menu Button (使用 id 便于脚本控制) -->
+      <!-- Mobile Menu Button -->
       <div class="md:hidden">
         <button
           id="mobile-menu-button"
@@ -180,7 +172,7 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
     </div>
   </div>
 
-  <!-- Mobile Menu (添加 data-close-mobile-menu 属性) -->
+  <!-- Mobile Menu -->
   <div
     id="mobile-menu"
     class="md:hidden hidden fixed inset-0 bg-white dark:bg-gray-900 z-50 overflow-y-auto"
@@ -210,11 +202,9 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
     </div>
 
     <div class="p-4">
-      <!-- 动态导航菜单（移动端模式） -->
       {navItems.length > 0 ? (
         <Menu items={navItems} currentLocale={currentLocale} mobile={true} horizontal={false} />
       ) : (
-        /* 降级方案 */
         <nav class="space-y-2 mb-6">
           {fallbackLinks.map((link) => (
             <a
@@ -229,7 +219,6 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
         </nav>
       )}
 
-      <!-- 移动端按钮项 -->
       {buttonItems.length > 0 && (
         <div class="mb-6 pt-4 border-t border-gray-200 dark:border-gray-700">
           {buttonItems.map(item => {
@@ -255,7 +244,8 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
       <!-- 语言切换器（移动端） -->
       <div class="mb-6 pt-4 border-t border-gray-200 dark:border-gray-700">
         <h3 class="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3 px-4">
-          {t(currentLocale, 'common.language')}
+          {/* ✅ 使用静态文本，不依赖翻译键 */}
+          {currentLocale === 'en' ? 'Language' : currentLocale === 'es' ? 'Idioma' : 'Langue'}
         </h3>
         <div class="space-y-2">
           {locales.map((locale: Locale) => {
@@ -316,7 +306,6 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
 </header>
 
 <script lang="ts">
-  // 移动端菜单交互（独立脚本，便于维护）
   document.addEventListener('DOMContentLoaded', () => {
     const menuButton = document.getElementById('mobile-menu-button');
     const mobileMenu = document.getElementById('mobile-menu');
@@ -337,7 +326,6 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
     menuButton?.addEventListener('click', toggleMenu);
     closeElements.forEach(el => el.addEventListener('click', closeMenu));
 
-    // 点击外部关闭（移除了类型断言，Astro 会自动处理）
     document.addEventListener('click', (event) => {
       if (!mobileMenu || mobileMenu.classList.contains('hidden')) return;
       if (!mobileMenu.contains(event.target) && !menuButton?.contains(event.target)) {
@@ -345,7 +333,6 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
       }
     });
 
-    // ESC 键关闭
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && mobileMenu && !mobileMenu.classList.contains('hidden')) {
         closeMenu();

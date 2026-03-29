@@ -31,39 +31,22 @@ const blogs = getContentList<Blog>('blog', locale);
     ) : (
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
         {blogs.map((blog) => {
-          const coverImageUrl = getFullImageUrl(blog.cover?.url);
-          const coverAlt = blog.cover?.alternativeText || blog.title;
+          // 处理 cover 数组：取第一个图片对象
+          const coverItem = Array.isArray(blog.cover) ? blog.cover[0] : blog.cover;
+          const coverImageUrl = getFullImageUrl(coverItem?.url);
+          const coverAlt = coverItem?.alternativeText || blog.title;
           const blogUrl = getLocalizedPath(locale, `/blog/${blog.slug}`);
           return (
-            <article
-              key={blog.documentId}
-              class="card bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden hover:shadow-xl transition-shadow duration-300"
-            >
+            <article key={blog.documentId} class="card bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden hover:shadow-xl transition-shadow duration-300">
               {coverImageUrl && (
                 <a href={blogUrl}>
-                  <Image
-                    src={coverImageUrl}
-                    alt={coverAlt}
-                    width={600}
-                    height={400}
-                    class="w-full h-48 object-cover"
-                    loading="lazy"
-                    decoding="async"
-                    format="webp"
-                  />
+                  <Image src={coverImageUrl} alt={coverAlt} width={600} height={400} class="w-full h-48 object-cover" loading="lazy" decoding="async" format="webp" />
                 </a>
               )}
-
               <div class="p-6">
                 <h2 class="text-2xl font-bold mb-3">
-                  <a
-                    href={blogUrl}
-                    class="hover:text-primary transition-colors"
-                  >
-                    {blog.title}
-                  </a>
+                  <a href={blogUrl} class="hover:text-primary transition-colors">{blog.title}</a>
                 </h2>
-
                 <div class="text-sm text-gray-600 dark:text-gray-400 mb-4 flex items-center">
                   {blog.author && (
                     <>
@@ -79,17 +62,8 @@ const blogs = getContentList<Blog>('blog', locale);
                     })}
                   </time>
                 </div>
-
-                {blog.excerpt && (
-                  <p class="text-gray-700 dark:text-gray-300 mb-4 line-clamp-3">
-                    {blog.excerpt}
-                  </p>
-                )}
-
-                <a
-                  href={blogUrl}
-                  class="inline-flex items-center text-primary hover:underline font-medium"
-                >
+                {blog.excerpt && <p class="text-gray-700 dark:text-gray-300 mb-4 line-clamp-3">{blog.excerpt}</p>}
+                <a href={blogUrl} class="inline-flex items-center text-primary hover:underline font-medium">
                   {t(locale, 'blog.readMore')}
                   <i class="i-carbon-arrow-right ml-2"></i>
                 </a>

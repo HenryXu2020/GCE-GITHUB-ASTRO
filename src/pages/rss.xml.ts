@@ -4,6 +4,7 @@ import { defaultLocale, locales, type Locale } from '@/generated/i18n-config';
 import { getContentList } from '@/lib/content-cache';
 import type { Blog } from '@/generated/graphql-types';
 import type { APIContext } from 'astro';
+import { getLocalizedPath } from '@/lib/env';
 
 export async function GET(context: APIContext) {
   const url = new URL(context.request.url);
@@ -20,7 +21,7 @@ export async function GET(context: APIContext) {
     items: publishedBlogs.map((blog) => ({
       title: blog.title,
       pubDate: new Date(blog.publishedAt),
-      link: `/${locale}/blog/${blog.slug}/`,
+      link: getLocalizedPath(locale, `/blog/${blog.slug}/`),
       description: blog.excerpt || blog.title,
     })),
     customData: `<language>${locale}</language>`,

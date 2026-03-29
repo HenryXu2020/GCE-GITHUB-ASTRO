@@ -7,6 +7,7 @@ import { getMenuTree } from '@/lib/menu';
 import { type Locale } from '@/i18n/dict';
 import { getLocalizedUrl, getLanguageName } from '@/i18n/utils';
 import { locales } from '@/generated/i18n-config';
+import { getAssetPath, getLocalizedPath, BASE_URL } from '@/lib/env';
 
 interface Props {
   currentLocale?: Locale;
@@ -31,7 +32,8 @@ const getFallbackLinks = () => {
 const fallbackLinks = getFallbackLinks();
 // ========== 动态菜单逻辑结束 ==========
 
-const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${currentLocale}`;
+const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') || 
+                   Astro.url.pathname === `${BASE_URL.replace(/\/$/, '')}/${currentLocale}`;
 ---
 
 <header
@@ -51,7 +53,7 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
           <img
             width="32"
             height="32"
-            src={siteConfig.header.logo.src}
+            src={getAssetPath(siteConfig.header.logo.src)}
             alt={siteConfig.header.logo.alt}
             class="w-8 h-8 transition-transform group-hover:scale-110"
           />
@@ -87,9 +89,11 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
         )}
 
         {buttonItems.map(item => {
-          const href = item.url?.startsWith('http')
-            ? item.url
-            : `/${currentLocale}${item.url?.startsWith('/') ? item.url.slice(1) : item.url || ''}`;
+          let href = item.url;
+          if (href && !href.startsWith('http')) {
+            // 使用 getLocalizedPath 生成包含 base 和 locale 的路径
+            href = getLocalizedPath(currentLocale, href);
+          }
           return (
             <a
               key={item.documentId}
@@ -144,7 +148,7 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
           }
 
           <a
-            href="/rss.xml"
+            href={getAssetPath('/rss.xml')}
             target="_blank"
             class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400 transition-colors"
             aria-label="RSS Feed"
@@ -186,7 +190,7 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
         <img
           width="32"
           height="32"
-          src={siteConfig.header.logo.src}
+          src={getAssetPath(siteConfig.header.logo.src)}
           alt={siteConfig.header.logo.alt}
           class="w-8 h-8"
         />
@@ -222,9 +226,10 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
       {buttonItems.length > 0 && (
         <div class="mb-6 pt-4 border-t border-gray-200 dark:border-gray-700">
           {buttonItems.map(item => {
-            const href = item.url?.startsWith('http')
-              ? item.url
-              : `/${currentLocale}${item.url?.startsWith('/') ? item.url.slice(1) : item.url || ''}`;
+            let href = item.url;
+            if (href && !href.startsWith('http')) {
+              href = getLocalizedPath(currentLocale, href);
+            }
             return (
               <a
                 key={item.documentId}
@@ -244,7 +249,6 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
       <!-- 语言切换器（移动端） -->
       <div class="mb-6 pt-4 border-t border-gray-200 dark:border-gray-700">
         <h3 class="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3 px-4">
-          {/* ✅ 使用静态文本，不依赖翻译键 */}
           {currentLocale === 'en' ? 'Language' : currentLocale === 'es' ? 'Idioma' : 'Langue'}
         </h3>
         <div class="space-y-2">
@@ -291,7 +295,7 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
           ))
         }
         <a
-          href="/rss.xml"
+          href={getAssetPath('/rss.xml')}
           target="_blank"
           class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400"
           aria-label="RSS Feed"

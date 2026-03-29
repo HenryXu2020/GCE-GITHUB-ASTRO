@@ -5,7 +5,7 @@ import { getContentList } from '@/lib/content-cache';
 import type { Blog } from '@/generated/graphql-types';
 import { t } from '@/i18n/dict';
 import { Image } from 'astro:assets';
-import { getFullImageUrl } from '@/lib/env'; // 统一导入
+import { getFullImageUrl, getLocalizedPath } from '@/lib/env';
 
 export async function getStaticPaths() {
   return locales.map((locale) => ({
@@ -33,13 +33,14 @@ const blogs = getContentList<Blog>('blog', locale);
         {blogs.map((blog) => {
           const coverImageUrl = getFullImageUrl(blog.cover?.url);
           const coverAlt = blog.cover?.alternativeText || blog.title;
+          const blogUrl = getLocalizedPath(locale, `/blog/${blog.slug}`);
           return (
             <article
               key={blog.documentId}
               class="card bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden hover:shadow-xl transition-shadow duration-300"
             >
               {coverImageUrl && (
-                <a href={`/${locale}/blog/${blog.slug}`}>
+                <a href={blogUrl}>
                   <Image
                     src={coverImageUrl}
                     alt={coverAlt}
@@ -56,7 +57,7 @@ const blogs = getContentList<Blog>('blog', locale);
               <div class="p-6">
                 <h2 class="text-2xl font-bold mb-3">
                   <a
-                    href={`/${locale}/blog/${blog.slug}`}
+                    href={blogUrl}
                     class="hover:text-primary transition-colors"
                   >
                     {blog.title}
@@ -86,7 +87,7 @@ const blogs = getContentList<Blog>('blog', locale);
                 )}
 
                 <a
-                  href={`/${locale}/blog/${blog.slug}`}
+                  href={blogUrl}
                   class="inline-flex items-center text-primary hover:underline font-medium"
                 >
                   {t(locale, 'blog.readMore')}

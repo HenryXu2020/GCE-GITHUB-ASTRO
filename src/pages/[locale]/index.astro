@@ -6,7 +6,7 @@ import { getContentList } from '@/lib/content-cache';
 import type { Blog } from '@/generated/graphql-types';
 import { t } from '@/i18n/dict';
 import { Image } from 'astro:assets';
-import { getFullImageUrl } from '@/lib/env'; // 统一导入
+import { getFullImageUrl, getLocalizedPath } from '@/lib/env';
 
 export async function getStaticPaths() {
   return locales.map((locale) => ({
@@ -37,10 +37,11 @@ const latestBlogs = allBlogs.slice(0, 3);
           {latestBlogs.map((blog) => {
             const coverImageUrl = getFullImageUrl(blog.cover?.url);
             const coverAlt = blog.cover?.alternativeText || blog.title;
+            const blogUrl = getLocalizedPath(locale, `/blog/${blog.slug}`);
             return (
               <article key={blog.documentId} class="bg-white dark:bg-gray-800 rounded-lg shadow-md overflow-hidden hover:shadow-lg transition-shadow">
                 {coverImageUrl && (
-                  <a href={`/${locale}/blog/${blog.slug}`}>
+                  <a href={blogUrl}>
                     <Image
                       src={coverImageUrl}
                       alt={coverAlt}
@@ -56,7 +57,7 @@ const latestBlogs = allBlogs.slice(0, 3);
                 <div class="p-6">
                   <h3 class="text-xl font-semibold mb-2">
                     <a
-                      href={`/${locale}/blog/${blog.slug}`}
+                      href={blogUrl}
                       class="text-gray-900 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
                     >
                       {blog.title}
@@ -77,7 +78,7 @@ const latestBlogs = allBlogs.slice(0, 3);
                     <p class="text-gray-600 dark:text-gray-300 mb-4">{blog.excerpt}</p>
                   )}
                   <a
-                    href={`/${locale}/blog/${blog.slug}`}
+                    href={blogUrl}
                     class="inline-flex items-center text-blue-600 dark:text-blue-400 hover:underline font-medium"
                   >
                     {t(locale, 'common.readMore')}
@@ -96,7 +97,7 @@ const latestBlogs = allBlogs.slice(0, 3);
       {latestBlogs.length > 0 && (
         <div class="text-center mt-8">
           <a
-            href={`/${locale}/blog`}
+            href={getLocalizedPath(locale, '/blog')}
             class="inline-flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 transition-colors"
           >
             {t(locale, 'blog.allPosts')}

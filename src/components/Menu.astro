@@ -1,6 +1,7 @@
 ---
 // src/components/Menu.astro
 import type { MenuNode } from '@/lib/menu';
+import { getLocalizedPath } from '@/lib/env';
 
 export interface Props {
   items: MenuNode[];
@@ -23,9 +24,8 @@ const isRoot = level === 0;
 const getHref = (url: string | null | undefined): string => {
   if (!url) return '#';
   if (url.startsWith('http://') || url.startsWith('https://')) return url;
-  const locale = currentLocale || 'en';
-  const normalized = url.startsWith('/') ? url : `/${url}`;
-  return `/${locale}${normalized}`;
+  // 使用 getLocalizedPath 自动添加 base 和 locale
+  return getLocalizedPath(currentLocale, url);
 };
 
 const hasRenderableChildren = (item: MenuNode): boolean => {

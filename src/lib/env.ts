@@ -10,25 +10,47 @@ export const STRAPI_TOKEN = import.meta.env.PUBLIC_STRAPI_API_TOKEN || '';
 export const SITE_URL = import.meta.env.SITE_URL || 'https://astro.lactisoles.com';
 export const IS_PRODUCTION = import.meta.env.PROD;
 
+// 获取 base 路径（用于 GitHub Pages 子目录部署）
+export const BASE_URL = import.meta.env.BASE_URL || '/';
+
 /**
- * 根据相对路径或绝对路径获取完整的图片 URL
+ * 根据相对路径或绝对路径获取完整的图片 URL（Strapi 图片）
  * @param url 图片路径（可能为相对路径或绝对URL）
  * @returns 完整 URL，如果无法拼接则返回 undefined
  */
 export function getFullImageUrl(url?: string): string | undefined {
   if (!url) return undefined;
-  // 已经是绝对 URL（以 http:// 或 https:// 开头）
   if (url.startsWith('http://') || url.startsWith('https://')) {
     return url;
   }
-  // 相对路径，拼接 Strapi 基础 URL
   if (STRAPI_URL) {
-    // 确保 url 以 / 开头，避免双斜杠
     const normalizedUrl = url.startsWith('/') ? url : `/${url}`;
     return `${STRAPI_URL}${normalizedUrl}`;
   }
-  // 无法拼接时，返回 undefined 以明确表示无效
   return undefined;
+}
+
+/**
+ * 获取本地化路径（自动包含 base 和 locale）
+ * @param locale 当前语言
+ * @param path 相对路径（例如 '/blog/my-post' 或 'blog/my-post'）
+ * @returns 完整路径，例如 '/GCE-GITHUB-ASTRO/en/blog/my-post'
+ */
+export function getLocalizedPath(locale: string, path: string = ''): string {
+  const base = BASE_URL.replace(/\/$/, '');
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return `${base}/${locale}${normalizedPath}`;
+}
+
+/**
+ * 获取静态资源路径（自动包含 base）
+ * @param relativePath 相对路径，例如 '/hero.jpg' 或 'hero.jpg'
+ * @returns 完整路径，例如 '/GCE-GITHUB-ASTRO/hero.jpg'
+ */
+export function getAssetPath(relativePath: string): string {
+  const base = BASE_URL.replace(/\/$/, '');
+  const path = relativePath.startsWith('/') ? relativePath : `/${relativePath}`;
+  return `${base}${path}`;
 }
 
 /**

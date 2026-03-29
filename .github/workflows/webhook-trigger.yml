@@ -21,7 +21,7 @@ jobs:
     permissions:
       contents: read
       pages: write
-      id-token: write               # 🔑 关键修复：启用 OIDC 认证
+      id-token: write               # 🔑 启用 OIDC 认证
 
     steps:
       - uses: actions/checkout@v4
@@ -117,6 +117,7 @@ jobs:
       # -----------------------------------------------------------------
       # 增量更新路径（仅用于 repository_dispatch 事件且缓存有效）
       # 使用 set -euo pipefail 确保错误及时终止，并安全迭代 locales
+      # 🔧 修复：放宽 ID 校验正则以兼容 Strapi v5 documentId
       # -----------------------------------------------------------------
       - name: Process incremental updates
         if: github.event_name == 'repository_dispatch' && env.FORCE_FULL_CACHE != 'true'
@@ -136,7 +137,8 @@ jobs:
               echo "::error::Invalid model name: $MODEL"
               exit 1
             fi
-            if ! [[ "$ID" =~ ^[0-9a-f-]+$ ]]; then
+            # 🔑 修复：允许所有小写字母、数字和连字符（兼容 Strapi v4 UUID 和 v5 base32-like）
+            if ! [[ "$ID" =~ ^[a-z0-9-]+$ ]]; then
               echo "::error::Invalid entry ID: $ID"
               exit 1
             fi

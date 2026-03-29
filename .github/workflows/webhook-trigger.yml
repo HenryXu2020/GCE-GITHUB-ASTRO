@@ -21,6 +21,7 @@ jobs:
     permissions:
       contents: read
       pages: write
+      id-token: write               # 🔑 关键修复：启用 OIDC 认证
 
     steps:
       - uses: actions/checkout@v4

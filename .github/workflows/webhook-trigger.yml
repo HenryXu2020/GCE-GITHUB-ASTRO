@@ -10,8 +10,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NODE_VERSION: '24'
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NODE_VERSION: '22'                # 锁定 LTS 版本
   PUBLIC_STRAPI_API_URL: ${{ secrets.STRAPI_API_URL }}
   PUBLIC_STRAPI_API_TOKEN: ${{ secrets.STRAPI_API_TOKEN }}
   CI_STRAPI_INTROSPECTION_TOKEN: ${{ secrets.CI_STRAPI_INTROSPECTION_TOKEN }}
@@ -22,7 +21,6 @@ jobs:
     permissions:
       contents: read
       pages: write
-      id-token: write
 
     steps:
       - uses: actions/checkout@v4
@@ -36,44 +34,126 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Ensure jq is available
+        run: |
+          if ! command -v jq &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y jq
+          fi
+          jq --version
+
       # -----------------------------------------------------------------
-      # 缓存恢复：使用动态键 + 前缀匹配，获取最近一次保存的缓存
+      # 生成缓存键组件（分支名 + 内容哈希），并输出 remote_hash 供复用
+      # -----------------------------------------------------------------
+      - name: Generate cache key components
+        id: cache-key
+        run: |
+          # 分支名标准化（替换 / 为 -）
+          CACHE_BRANCH="${GITHUB_REF_NAME//\//-}"
+          echo "CACHE_BRANCH=$CACHE_BRANCH" >> $GITHUB_ENV
+
+          # 计算远程 schema 哈希（使用 introspection）
+          REMOTE_HASH=$(curl -s -f -X POST "${{ secrets.STRAPI_API_URL }}/graphql" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.STRAPI_API_TOKEN }}" \
+            -d '{"query": "query IntrospectionQuery { __schema { types { name } } }"}' \
+            2>/dev/null | jq -r '.data.__schema.types[].name' 2>/dev/null | sort | md5sum | cut -d' ' -f1 || echo "fetch_failed")
+
+          if [ "$REMOTE_HASH" != "fetch_failed" ] && [ -n "$REMOTE_HASH" ]; then
+            echo "CACHE_HASH=$REMOTE_HASH" >> $GITHUB_ENV
+            echo "Remote schema hash: $REMOTE_HASH"
+            echo "remote_hash=$REMOTE_HASH" >> $GITHUB_OUTPUT
+            echo "$REMOTE_HASH" > src/generated/schema-hash.txt
+          else
+            echo "Failed to fetch remote schema, using fallback hash"
+            # 加固：检查 src/content 是否存在且有内容
+            FALLBACK_HASH=""
+            if [ -d src/content ] && [ "$(find src/content -type f \( -name "*.md" -o -name "*.mdx" -o -name "*.json" \) 2>/dev/null | head -n1)" ]; then
+              find src/content -type f \( -name "*.md" -o -name "*.mdx" -o -name "*.json" \) 2>/dev/null | sort | xargs md5sum 2>/dev/null | md5sum | cut -d' ' -f1 > fallback-hash.txt
+              FALLBACK_HASH=$(cat fallback-hash.txt)
+            else
+              # 无内容文件时，使用固定标记 + 日期避免哈希碰撞
+              FALLBACK_HASH="no-content-$(date +%Y%m%d)"
+              echo "$FALLBACK_HASH" > fallback-hash.txt
+            fi
+            echo "CACHE_HASH=$FALLBACK_HASH" >> $GITHUB_ENV
+            echo "remote_hash=$FALLBACK_HASH" >> $GITHUB_OUTPUT
+            # 写入本地哈希文件供后续比较
+            echo "$FALLBACK_HASH" > src/generated/schema-hash.txt
+          fi
+          echo "Cache key: ${{ runner.os }}-content-$CACHE_BRANCH-$CACHE_HASH"
+
+      # -----------------------------------------------------------------
+      # 缓存恢复（使用动态键 + 前缀匹配），同时缓存 schema-hash.txt
       # -----------------------------------------------------------------
       - name: Restore content cache
         uses: actions/cache/restore@v4
+        id: cache-restore
         with:
-          path: src/generated/cache
-          key: ${{ runner.os }}-content-cache-${{ github.run_id }}
+          path: |
+            src/generated/cache
+            src/generated/schema-hash.txt
+          key: ${{ runner.os }}-content-${{ env.CACHE_BRANCH }}-${{ env.CACHE_HASH }}
           restore-keys: |
-            ${{ runner.os }}-content-cache-
+            ${{ runner.os }}-content-${{ env.CACHE_BRANCH }}-
+            ${{ runner.os }}-content-
 
       # -----------------------------------------------------------------
-      # 增量更新路径（仅用于 repository_dispatch 事件）
+      # 缓存有效性校验与初始化
       # -----------------------------------------------------------------
-      - name: Generate i18n config for incremental updates
-        if: github.event_name == 'repository_dispatch'
-        run: npm run generate-config
+      - name: Validate cache and fallback
+        run: |
+          mkdir -p src/generated/cache
+          if [ ! -f src/generated/cache/MANIFEST.json ]; then
+            echo "::warning::Cache manifest missing, will fallback to full build"
+            echo "FORCE_FULL_CACHE=true" >> $GITHUB_ENV
+          else
+            if ! jq -e '.version' src/generated/cache/MANIFEST.json > /dev/null 2>&1; then
+              echo "::warning::Cache manifest invalid, will fallback to full build"
+              echo "FORCE_FULL_CACHE=true" >> $GITHUB_ENV
+            fi
+          fi
 
+      # -----------------------------------------------------------------
+      # 增量更新路径（仅用于 repository_dispatch 事件且缓存有效）
+      # 使用 set -euo pipefail 确保错误及时终止，并安全迭代 locales
+      # -----------------------------------------------------------------
       - name: Process incremental updates
-        if: github.event_name == 'repository_dispatch'
+        if: github.event_name == 'repository_dispatch' && env.FORCE_FULL_CACHE != 'true'
         env:
           EVENTS: ${{ toJSON(github.event.client_payload.events) }}
         run: |
+          set -euo pipefail
+
           echo "Processing incremental updates..."
-          # 解析 events 数组并逐个调用 update-cache-entry.ts
           echo "$EVENTS" | jq -c '.[]' | while read -r event; do
             MODEL=$(echo "$event" | jq -r '.model')
             ID=$(echo "$event" | jq -r '.id')
             ACTION=$(echo "$event" | jq -r '.action')
-            LOCALES=$(echo "$event" | jq -r '.locales[]?')
-            if [ -z "$LOCALES" ]; then
+            
+            # 参数校验
+            if ! [[ "$MODEL" =~ ^[a-z][a-z0-9-]*$ ]]; then
+              echo "::error::Invalid model name: $MODEL"
+              exit 1
+            fi
+            if ! [[ "$ID" =~ ^[0-9a-f-]+$ ]]; then
+              echo "::error::Invalid entry ID: $ID"
+              exit 1
+            fi
+            if ! [[ "$ACTION" =~ ^(publish|unpublish|delete|update|create)$ ]]; then
+              echo "::error::Invalid action: $ACTION"
+              exit 1
+            fi
+
+            # 安全处理 locales：使用 while read 防止空格拆分
+            LOCALE_COUNT=$(echo "$event" | jq -r '.locales | length // 0')
+            if [ "$LOCALE_COUNT" -eq 0 ]; then
               echo "Updating $MODEL/$ID ($ACTION) with default locale"
               npx tsx scripts/update-cache-entry.ts \
                 --model "$MODEL" \
                 --id "$ID" \
                 --event "$ACTION"
             else
-              for LOCALE in $LOCALES; do
+              echo "$event" | jq -r '.locales[]' | while IFS= read -r LOCALE; do
                 echo "Updating $MODEL/$ID ($ACTION) locale=$LOCALE"
                 npx tsx scripts/update-cache-entry.ts \
                   --model "$MODEL" \
@@ -85,21 +165,19 @@ jobs:
           done
           echo "Incremental updates completed."
 
-      # -----------------------------------------------------------------
-      # 保存更新后的缓存：使用动态键（含 run_id），避免键冲突
-      # -----------------------------------------------------------------
-      - name: Save updated cache
-        if: github.event_name == 'repository_dispatch'
-        uses: actions/cache/save@v4
-        with:
-          path: src/generated/cache
-          key: ${{ runner.os }}-content-cache-${{ github.run_id }}
+          # 增量更新成功后，更新缓存 manifest 中的最后更新时间
+          if [ -f src/generated/cache/MANIFEST.json ]; then
+            jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              '.lastUpdated = $ts' \
+              src/generated/cache/MANIFEST.json > /tmp/manifest.tmp && \
+              mv /tmp/manifest.tmp src/generated/cache/MANIFEST.json
+          fi
 
       # -----------------------------------------------------------------
-      # 全量构建路径（用于非 repository_dispatch 事件）
+      # 全量构建路径（用于非 repository_dispatch 事件或缓存无效时）
       # -----------------------------------------------------------------
-      - name: Full cache build (non-webhook)
-        if: github.event_name != 'repository_dispatch'
+      - name: Full cache build (non-webhook or fallback)
+        if: github.event_name != 'repository_dispatch' || env.FORCE_FULL_CACHE == 'true'
         run: |
           echo "Running full cache build..."
           npm run analyze-schema
@@ -107,47 +185,66 @@ jobs:
           npm run codegen-dynamic
           npm run generate-config
           npm run build-cache
+          # 生成缓存清单文件
+          echo '{"version":1}' > src/generated/cache/MANIFEST.json
 
       # -----------------------------------------------------------------
-      # 公共步骤：GraphQL 类型生成与站点构建
+      # 公共步骤：GraphQL 连通性测试
       # -----------------------------------------------------------------
       - name: Test Strapi GraphQL connectivity
+        env:
+          STRAPI_URL: ${{ secrets.STRAPI_API_URL }}
+          STRAPI_TOKEN: ${{ secrets.STRAPI_API_TOKEN }}
         run: |
-          echo "Testing GraphQL endpoint connectivity with Bearer token..."
-          curl -X POST ${{ secrets.STRAPI_API_URL }}/graphql \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.STRAPI_API_TOKEN }}" \
-            -H "apollo-require-preflight: true" \
-            -H "x-ci-introspection-token: ${{ secrets.CI_STRAPI_INTROSPECTION_TOKEN }}" \
-            -d '{"query": "query { __typename }"}' \
-            -w "\nHTTP Status: %{http_code}\n"
-          echo "Connectivity test completed."
+          set +x
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $STRAPI_TOKEN" \
+            "$STRAPI_URL/graphql" \
+            -d '{"query":"{__typename}"}')
+          echo "GraphQL endpoint status: $HTTP_CODE"
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo "::error::Strapi GraphQL connectivity failed"
+            exit 1
+          fi
 
-      - name: Generate GraphQL queries
-        run: npm run generate-correct-queries
-
-      - name: Generate TypeScript types (codegen)
-        id: codegen
-        continue-on-error: true
-        run: npm run codegen-dynamic
+      # -----------------------------------------------------------------
+      # 生成 GraphQL 查询和 TypeScript 类型（智能合并，避免冗余）
+      # -----------------------------------------------------------------
+      - name: Generate GraphQL queries and types
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ] && [ "${{ env.FORCE_FULL_CACHE }}" != "true" ]; then
+            REMOTE_HASH="${{ steps.cache-key.outputs.remote_hash }}"
+            LOCAL_HASH=$(cat src/generated/schema-hash.txt 2>/dev/null || echo "none")
+            if [ -n "$REMOTE_HASH" ] && [ "$REMOTE_HASH" != "$LOCAL_HASH" ]; then
+              echo "Schema changed ($LOCAL_HASH → $REMOTE_HASH), regenerating queries and types"
+              npm run generate-correct-queries
+              npm run codegen-dynamic
+              echo "$REMOTE_HASH" > src/generated/schema-hash.txt
+            else
+              echo "Schema unchanged, skipping query regeneration"
+            fi
+          else
+            echo "Full build path, regenerating queries and types"
+            npm run generate-correct-queries
+            npm run codegen-dynamic
+          fi
 
       - name: Verify codegen output
         run: |
-          echo "Codegen exit code/outcome: ${{ steps.codegen.outcome }}"
-          if [ -f src/generated/graphql-types.ts ]; then
-            echo "✅ graphql-types.ts exists"
-            ls -la src/generated/graphql-types.ts
-            head -n 5 src/generated/graphql-types.ts
-          else
-            echo "❌ graphql-types.ts not found"
+          if [ ! -s src/generated/graphql-types.ts ]; then
+            echo "::error::graphql-types.ts is missing or empty"
             exit 1
           fi
+          if ! grep -qE "export (type|interface) (Query|Mutation|.*Entry)" src/generated/graphql-types.ts; then
+            echo "::warning::graphql-types.ts may lack expected exports (manual verification recommended)"
+          fi
+          echo "✅ Codegen output verified"
 
       - name: Generate i18n configuration
         run: npm run generate-config
 
       # -----------------------------------------------------------------
-      # 构建 Astro 站点（区分 webhook 与其它事件）
+      # 构建 Astro 站点
       # -----------------------------------------------------------------
       - name: Build Astro site
         run: |
@@ -158,6 +255,34 @@ jobs:
             echo "Running full build with cache regeneration..."
             npm run build
           fi
+
+      - name: Verify build output
+        run: |
+          if [ ! -d dist ]; then
+            echo "::error::Build output directory 'dist' not found"
+            exit 1
+          fi
+          if [ ! -f dist/index.html ]; then
+            echo "::error::Missing dist/index.html"
+            exit 1
+          fi
+          if find dist -name "*.js" -exec grep -l "undefined\|null is not an object" {} \; | grep -q .; then
+            echo "::warning::Build output may contain runtime errors"
+          fi
+
+      # -----------------------------------------------------------------
+      # 保存更新后的缓存（仅在构建成功后执行，并容忍 key 冲突）
+      # 缓存路径包含 cache 目录和 schema-hash.txt
+      # -----------------------------------------------------------------
+      - name: Save content cache (post-build)
+        if: success()
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: |
+            src/generated/cache
+            src/generated/schema-hash.txt
+          key: ${{ runner.os }}-content-${{ env.CACHE_BRANCH }}-${{ env.CACHE_HASH }}
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

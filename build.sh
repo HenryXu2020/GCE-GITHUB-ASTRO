@@ -37,4 +37,3 @@ else
     npm run build-cache
 fi
 
-npx astro build

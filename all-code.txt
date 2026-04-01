@@ -1,12 +1,14 @@
 ## 文件：.env
 # Strapi Configuration
 PUBLIC_STRAPI_API_URL=https://strabi.lactisoles.com
-PUBLIC_STRAPI_API_TOKEN=fdaa74109fe9d9889f4436df353bbed458e9995359ec9da5493084df8a93a853a9024d70ba80f977421e2986093529f6507ba33369eb51205d4b31407599c8f79d135abca3418d6627be32b7907a0472e538e19be508a73836813a98087b9dfa978cc8fd0935012a8dc3d8a05934dd8af0b3ac4ef8d93505d1229541b6d64c12
+PUBLIC_STRAPI_API_TOKEN=93ce0e5f86aed875310c549fb5a4c4f9c7ee4fb7c6e1eb33009487a0037e42a216ae7c3f3e741f0025cbd56be01b436f0f83da5182e3bcdd83f4025c7f2d9e807f4646ac34c5809851e0a7dac3f9011c266f0dd656a9f705737547b90a63e62347da5b31920706d53f603460147167298c5a52c3c4d9e5ff1fe2a95048b74389
 # Site Configuration
 SITE_URL=https://astro.lactisoles.com
-STRAPI_GRAPHQL_URL=https://strabi.lactisoles.com/graphql
+STRAPI_GRAPHQL_URL=https://strapi.lactisoles.com/graphql
 # Webhook
-WEBHOOK_SECRET=change_me_please
+WEBHOOK_SECRET=ssC2FZe6G7jC5zG5E415bWRX7niii+DJUEB3I6yeIk8=
+CI_STRAPI_INTROSPECTION_TOKEN=KzzZIJ9WXD/b/sTvsWXGUy4BBydlam8KTZJBS0A0y9E=
+
 # Cache
 CACHE_DIR=src/generated/cache
 # Debounce setTimeout
@@ -15,6 +17,281 @@ WEBHOOK_DEBOUNCE_MS=8000        # 8秒
 WEBHOOK_MAX_WAIT_MS=45000        # 45秒
 WEBHOOK_MAX_BODY_SIZE=10485760   # 10 MB（默认，无需修改）
 WEBHOOK_REQUEST_TIMEOUT_MS=30000 # 30秒（默认）
+
+## 文件：.github/workflows/webhook-trigger.yml
+name: Handle Strapi Webhook
+
+on:
+  repository_dispatch:
+    types: [strapi_batch, strapi_trigger-test]
+  workflow_dispatch:
+
+concurrency:
+  group: astro-build
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '22'
+  PUBLIC_STRAPI_API_URL: ${{ secrets.STRAPI_API_URL }}
+  PUBLIC_STRAPI_API_TOKEN: ${{ secrets.STRAPI_API_TOKEN }}
+  CI_STRAPI_INTROSPECTION_TOKEN: ${{ secrets.CI_STRAPI_INTROSPECTION_TOKEN }}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Ensure jq is available
+        run: |
+          if ! command -v jq &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y jq
+          fi
+          jq --version
+
+      # -----------------------------------------------------------------
+      # 生成缓存 Key 组件（分支名 + Schema哈希 + 内容哈希）
+      # -----------------------------------------------------------------
+      - name: Generate cache key components
+        id: cache-key
+        run: |
+          # 分支名标准化
+          CACHE_BRANCH="${GITHUB_REF_NAME//\//-}"
+          echo "CACHE_BRANCH=$CACHE_BRANCH" >> $GITHUB_ENV
+
+          # 计算远程 Schema 哈希（用于检测结构变化）
+          SCHEMA_HASH=$(curl -s -f -X POST "${{ secrets.STRAPI_API_URL }}/graphql" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.STRAPI_API_TOKEN }}" \
+            -d '{"query": "query IntrospectionQuery { __schema { types { name } } }"}' \
+            2>/dev/null | jq -r '.data.__schema.types[].name' 2>/dev/null | sort | md5sum | cut -d' ' -f1 || echo "fetch_failed")
+          
+          if [ "$SCHEMA_HASH" != "fetch_failed" ] && [ -n "$SCHEMA_HASH" ]; then
+            echo "SCHEMA_HASH=$SCHEMA_HASH" >> $GITHUB_ENV
+            echo "$SCHEMA_HASH" > src/generated/schema-hash.txt
+          else
+            echo "SCHEMA_HASH=fallback" >> $GITHUB_ENV
+            echo "fallback" > src/generated/schema-hash.txt
+          fi
+
+          # 计算内容哈希（基于现有缓存文件，若目录为空则使用 "empty"）
+          if [ -d src/generated/cache ] && [ "$(ls -A src/generated/cache 2>/dev/null)" ]; then
+            CONTENT_HASH=$(find src/generated/cache -name "*.json" -exec md5sum {} \; 2>/dev/null | sort | md5sum | cut -d' ' -f1 | cut -c1-8)
+          else
+            CONTENT_HASH="empty"
+          fi
+          echo "CONTENT_HASH=$CONTENT_HASH" >> $GITHUB_ENV
+
+          # 最终缓存 Key: OS-branch-schemaHash-contentHash
+          FINAL_KEY="${{ runner.os }}-content-${CACHE_BRANCH}-${SCHEMA_HASH:0:12}-${CONTENT_HASH}"
+          RESTORE_PREFIX="${{ runner.os }}-content-${CACHE_BRANCH}-${SCHEMA_HASH:0:12}-"
+          echo "cache_key=$FINAL_KEY" >> $GITHUB_OUTPUT
+          echo "cache_restore_prefix=$RESTORE_PREFIX" >> $GITHUB_OUTPUT
+          echo "Cache key: $FINAL_KEY"
+          echo "Restore prefix: $RESTORE_PREFIX"
+
+      # -----------------------------------------------------------------
+      # 缓存恢复（使用前缀匹配，获取最近版本的缓存）
+      # -----------------------------------------------------------------
+      - name: Restore content cache
+        uses: actions/cache/restore@v4
+        id: cache-restore
+        with:
+          path: |
+            src/generated/cache
+            src/generated/schema-hash.txt
+          key: ${{ steps.cache-key.outputs.cache_key }}
+          restore-keys: |
+            ${{ steps.cache-key.outputs.cache_restore_prefix }}
+            ${{ runner.os }}-content-${{ env.CACHE_BRANCH }}-
+            ${{ runner.os }}-content-
+
+      # -----------------------------------------------------------------
+      # 缓存有效性校验与初始化
+      # -----------------------------------------------------------------
+      - name: Validate cache and fallback
+        run: |
+          mkdir -p src/generated/cache
+          if [ ! -f src/generated/cache/MANIFEST.json ]; then
+            echo "::warning::Cache manifest missing, will fallback to full build"
+            echo "FORCE_FULL_CACHE=true" >> $GITHUB_ENV
+          else
+            if ! jq -e '.version' src/generated/cache/MANIFEST.json > /dev/null 2>&1; then
+              echo "::warning::Cache manifest invalid, will fallback to full build"
+              echo "FORCE_FULL_CACHE=true" >> $GITHUB_ENV
+            fi
+          fi
+
+      # -----------------------------------------------------------------
+      # 增量更新路径（仅 repository_dispatch 且缓存有效）
+      # -----------------------------------------------------------------
+      - name: Process incremental updates
+        if: github.event_name == 'repository_dispatch' && env.FORCE_FULL_CACHE != 'true'
+        env:
+          EVENTS: ${{ toJSON(github.event.client_payload.events) }}
+        run: |
+          set -euo pipefail
+
+          echo "Processing incremental updates..."
+          echo "$EVENTS" | jq -c '.[]' | while read -r event; do
+            MODEL=$(echo "$event" | jq -r '.model')
+            ID=$(echo "$event" | jq -r '.id')
+            ACTION=$(echo "$event" | jq -r '.action')
+            
+            # 参数校验
+            if ! [[ "$MODEL" =~ ^[a-z][a-z0-9-]*$ ]]; then
+              echo "::error::Invalid model name: $MODEL"
+              exit 1
+            fi
+            # 兼容 Strapi v5 documentId (小写字母+数字+连字符)
+            if ! [[ "$ID" =~ ^[a-z0-9-]+$ ]]; then
+              echo "::error::Invalid entry ID: $ID"
+              exit 1
+            fi
+            if ! [[ "$ACTION" =~ ^(publish|unpublish|delete|update|create)$ ]]; then
+              echo "::error::Invalid action: $ACTION"
+              exit 1
+            fi
+
+            LOCALE_COUNT=$(echo "$event" | jq -r '.locales | length // 0')
+            if [ "$LOCALE_COUNT" -eq 0 ]; then
+              echo "Updating $MODEL/$ID ($ACTION) with default locale"
+              npx tsx scripts/update-cache-entry.ts \
+                --model "$MODEL" \
+                --id "$ID" \
+                --event "$ACTION"
+            else
+              echo "$event" | jq -r '.locales[]' | while IFS= read -r LOCALE; do
+                echo "Updating $MODEL/$ID ($ACTION) locale=$LOCALE"
+                npx tsx scripts/update-cache-entry.ts \
+                  --model "$MODEL" \
+                  --id "$ID" \
+                  --locale "$LOCALE" \
+                  --event "$ACTION"
+              done
+            fi
+          done
+          echo "Incremental updates completed."
+
+          # 更新 manifest 中的最后更新时间
+          if [ -f src/generated/cache/MANIFEST.json ]; then
+            jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              '.lastUpdated = $ts' \
+              src/generated/cache/MANIFEST.json > /tmp/manifest.tmp && \
+              mv /tmp/manifest.tmp src/generated/cache/MANIFEST.json
+          fi
+
+      # -----------------------------------------------------------------
+      # 全量构建路径（非 repository_dispatch 或缓存无效时）
+      # -----------------------------------------------------------------
+      - name: Full cache build (non-webhook or fallback)
+        if: github.event_name != 'repository_dispatch' || env.FORCE_FULL_CACHE == 'true'
+        run: |
+          echo "Running full cache build..."
+          npm run analyze-schema
+          npm run generate-correct-queries
+          npm run codegen-dynamic
+          npm run generate-config
+          npm run build-cache
+          echo '{"version":1}' > src/generated/cache/MANIFEST.json
+
+      # -----------------------------------------------------------------
+      # 生成 GraphQL 查询和 TypeScript 类型（智能合并）
+      # -----------------------------------------------------------------
+      - name: Generate GraphQL queries and types
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ] && [ "${{ env.FORCE_FULL_CACHE }}" != "true" ]; then
+            REMOTE_HASH="${{ env.SCHEMA_HASH }}"
+            LOCAL_HASH=$(cat src/generated/schema-hash.txt 2>/dev/null || echo "none")
+            if [ -n "$REMOTE_HASH" ] && [ "$REMOTE_HASH" != "$LOCAL_HASH" ]; then
+              echo "Schema changed ($LOCAL_HASH → $REMOTE_HASH), regenerating queries and types"
+              npm run generate-correct-queries
+              npm run codegen-dynamic
+              echo "$REMOTE_HASH" > src/generated/schema-hash.txt
+            else
+              echo "Schema unchanged, skipping query regeneration"
+            fi
+          else
+            echo "Full build path, regenerating queries and types"
+            npm run generate-correct-queries
+            npm run codegen-dynamic
+          fi
+
+      - name: Verify codegen output
+        run: |
+          if [ ! -s src/generated/graphql-types.ts ]; then
+            echo "::error::graphql-types.ts is missing or empty"
+            exit 1
+          fi
+          if ! grep -qE "export (type|interface) (Query|Mutation|.*Entry)" src/generated/graphql-types.ts; then
+            echo "::warning::graphql-types.ts may lack expected exports (manual verification recommended)"
+          fi
+          echo "✅ Codegen output verified"
+
+      - name: Generate i18n configuration
+        run: npm run generate-config
+
+      # -----------------------------------------------------------------
+      # 构建 Astro 站点
+      # -----------------------------------------------------------------
+      - name: Build Astro site
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            echo "Using incremental cache, skipping full cache build..."
+            npx astro build
+          else
+            echo "Running full build with cache regeneration..."
+            npm run build
+          fi
+
+      - name: Verify build output
+        run: |
+          if [ ! -d dist ]; then
+            echo "::error::Build output directory 'dist' not found"
+            exit 1
+          fi
+          if [ ! -f dist/index.html ]; then
+            echo "::error::Missing dist/index.html"
+            exit 1
+          fi
+          if find dist -name "*.js" -exec grep -l "undefined\|null is not an object" {} \; | grep -q .; then
+            echo "::warning::Build output may contain runtime errors"
+          fi
+
+      # -----------------------------------------------------------------
+      # 保存更新后的缓存（使用动态 key，内容变化时自动生成新 key）
+      # -----------------------------------------------------------------
+      - name: Save content cache (post-build)
+        if: success()
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: |
+            src/generated/cache
+            src/generated/schema-hash.txt
+          key: ${{ steps.cache-key.outputs.cache_key }}
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
 
 ## 文件：astro.config.ts
 // astro.config.ts
@@ -29,8 +306,10 @@ import path from 'path';
 
 const { locales, defaultLocale } = getConfig();
 
-// 站点基础 URL，优先使用环境变量，否则使用实际部署域名
-const SITE_URL = process.env.SITE_URL || 'https://astro.lactisoles.com';
+// 站点基础 URL，必须与 GitHub Pages 部署地址一致
+const SITE_URL = process.env.SITE_URL || 'https://henryxu2020.github.io/GCE-GITHUB-ASTRO/';
+// 添加 base 路径，对应仓库名
+const BASE_URL = process.env.BASE_URL || '/GCE-GITHUB-ASTRO/';
 
 // 读取内容缓存，获取所有博客的 slug 用于生成 customPages
 let blogPaths: string[] = [];
@@ -41,14 +320,12 @@ try {
     for (const file of files) {
       if (!file.endsWith('.json')) continue;
       const locale = file.replace(/\.json$/, '');
-      if (!locales.includes(locale)) continue; // 确保是有效语言
+      if (!locales.includes(locale)) continue;
 
       const filePath = path.join(cacheDir, file);
-      // [修复] 缓存文件现在是对象格式（以 documentId 为键），需要转换为数组
       const dataMap = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      const blogs = Object.values(dataMap); // 对象 → 数组
+      const blogs = Object.values(dataMap);
       for (const blog of blogs) {
-        // 增加空值判断，确保 blog 对象存在且包含 slug
         if (blog && typeof blog === 'object' && blog.slug) {
           const relativePath = `/${locale}/blog/${blog.slug}/`;
           const fullUrl = new URL(relativePath, SITE_URL).toString();
@@ -63,10 +340,9 @@ try {
   console.warn('⚠️ Failed to read blog cache for sitemap custom pages:', error);
 }
 
-// 过滤无效的 URL，避免破坏 sitemap
 const validBlogPaths = blogPaths.filter(path => {
   try {
-    new URL(path); // 验证是否为有效 URL
+    new URL(path);
     return true;
   } catch {
     console.warn(`⚠️ Invalid sitemap path: ${path}`);
@@ -74,16 +350,13 @@ const validBlogPaths = blogPaths.filter(path => {
   }
 });
 
-// https://astro.build/config
 export default defineConfig({
   site: SITE_URL,
-
+  base: BASE_URL,      // 关键：设置 base 路径
   server: {
     port: 1977,
   },
-
   output: 'static',
-
   i18n: {
     defaultLocale,
     locales: locales as string[],
@@ -92,20 +365,17 @@ export default defineConfig({
       redirectToDefaultLocale: true,
     },
   },
-
   build: {
     inlineStylesheets: 'auto',
     format: 'directory',
     assets: '_astro',
   },
-
   image: {
     service: {
       entrypoint: 'astro/assets/services/sharp'
     },
     domains: ['strabi.lactisoles.com']
   },
-
   vite: {
     build: {
       rollupOptions: {
@@ -122,7 +392,6 @@ export default defineConfig({
       }
     }
   },
-
   integrations: [
     mdx(),
     sitemap({
@@ -141,7 +410,6 @@ export default defineConfig({
     UnoCSS({ injectReset: true }),
     vue(),
   ],
-
   markdown: {
     shikiConfig: {
       themes: {
@@ -193,7 +461,6 @@ else
     npm run build-cache
 fi
 
-npx astro build
 
 ## 文件：codegen-dynamic.config.js
 // codegen-dynamic.config.js
@@ -203,35 +470,31 @@ import { dirname, join } from 'path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// 加载环境变量
 dotenv.config({ path: join(__dirname, '.env') });
 
 const STRAPI_URL = process.env.PUBLIC_STRAPI_API_URL;
 const STRAPI_TOKEN = process.env.PUBLIC_STRAPI_API_TOKEN;
+const CI_INTROSPECTION_TOKEN = process.env.CI_STRAPI_INTROSPECTION_TOKEN || '';
 
 if (!STRAPI_URL) {
   throw new Error('PUBLIC_STRAPI_API_URL environment variable is not set');
 }
 
-// 增强 Token 验证：生产环境必须提供 Token，否则抛出错误
 const isProduction = process.env.NODE_ENV === 'production';
-if (!STRAPI_TOKEN) {
-  if (isProduction) {
-    throw new Error('PUBLIC_STRAPI_API_TOKEN is required in production');
-  }
-  console.warn(
-    '⚠️ PUBLIC_STRAPI_API_TOKEN is not set – using public access only. ' +
-    'Some protected content may not be accessible.'
-  );
+if (!STRAPI_TOKEN && isProduction) {
+  throw new Error('PUBLIC_STRAPI_API_TOKEN is required in production');
 }
 
 export default {
   schema: [
     {
       [`${STRAPI_URL}/graphql`]: {
-        headers: STRAPI_TOKEN ? {
-          Authorization: `Bearer ${STRAPI_TOKEN}`,
-        } : {},
+        headers: {
+          ...(STRAPI_TOKEN ? { Authorization: `Bearer ${STRAPI_TOKEN}` } : {}),
+          'x-ci-introspection-token': CI_INTROSPECTION_TOKEN,
+          'apollo-require-preflight': 'true',
+          'x-apollo-operation-name': 'IntrospectionQuery',
+        },
         method: 'POST',
       },
     },
@@ -278,29 +541,9 @@ export default {
         addDocBlocks: true,
         emitLegacyCommonJSImports: false,
       },
-      hooks: {
-        afterOneFileWrite: ['prettier --write'],
-      },
     },
   },
-  hooks: {
-    afterStart: () => {
-      console.log('🔧 Generating TypeScript types from optimized queries...');
-      console.log('   - Source: src/generated/all-queries.graphql');
-      console.log('   - Target: src/generated/graphql-types.ts');
-    },
-    afterAllFileWrite: (files) => {
-      console.log('✅ TypeScript types generated successfully!');
-      console.log(`📁 Generated ${files.length} file(s):`);
-      files.forEach(file => {
-        console.log(`   - ${file}`);
-      });
-    },
-  },
-  errorsOnly: false,
-  silent: false,
-  verbose: false,
-  debug: false,
+  // 完全移除 hooks 块，避免任何额外操作
 };
 
 ## 文件：codegen.config.js
@@ -381,7 +624,7 @@ export default {
     "prepare": "simple-git-hooks",
     "codegen": "graphql-codegen --config codegen.config.js",
     "generate-dynamic": "tsx scripts/generate-queries-correct.ts",
-    "codegen-dynamic": "graphql-codegen --config codegen-dynamic.config.js",
+    "codegen-dynamic": "graphql-codegen --config codegen-dynamic.config.js --verbose",
     "build-dynamic": "npm run analyze-schema && npm run generate-dynamic && npm run codegen-dynamic",
     "clean-generated": "rm -f src/generated/all-queries.graphql src/generated/graphql-types.ts src/generated/config.ts src/generated/content-types.ts src/generated/content-cache.*",
     "predev": "npm run clean-generated && npm run build-dynamic && npm run generate-config && npm run build-cache",
@@ -418,6 +661,7 @@ export default {
     "express": "^5.2.1",
     "graphql": "^16.12.0",
     "graphql-request": "^7.4.0",
+    "marked": "^17.0.5",
     "nprogress": "^0.2.0",
     "unocss": "66.1.0-beta.11",
     "vue": "^3.5.13"
@@ -516,8 +760,9 @@ pm2 save
  * - Records root field return type and accepted arguments
  * - Prefers plural list fields
  * - Only adds system fields that actually exist in the type
- * - Caches introspection result to avoid repeated network requests (C6)
+ * - Caches introspection result to avoid repeated network requests
  * - Enhanced error handling: timeout, retry, detailed logging
+ * - Added CI token and CSRF header for production introspection
  */
 
 import {
@@ -541,23 +786,16 @@ dotenv.config();
 
 const STRAPI_URL = process.env.PUBLIC_STRAPI_API_URL!;
 const STRAPI_TOKEN = process.env.PUBLIC_STRAPI_API_TOKEN;
+const CI_INTROSPECTION_TOKEN = process.env.CI_STRAPI_INTROSPECTION_TOKEN || '';
 
 if (!STRAPI_URL) throw new Error('PUBLIC_STRAPI_API_URL not set');
 
-// 缓存文件路径
 const CACHE_DIR = join(__dirname, '../src/generated');
 const SCHEMA_CACHE_PATH = join(CACHE_DIR, 'schema-introspection.json');
 
-// 可选：通过环境变量控制是否强制刷新缓存
 const FORCE_REFRESH = process.env.FORCE_REFRESH_SCHEMA === 'true';
 
-const SYSTEM_FIELDS = [
-  'id',
-  'documentId',
-  'createdAt',
-  'updatedAt',
-  'publishedAt'
-];
+const SYSTEM_FIELDS = ['id', 'documentId', 'createdAt', 'updatedAt', 'publishedAt'];
 
 type RelationConfig = {
   type: string;
@@ -566,8 +804,8 @@ type RelationConfig = {
 
 type ContentTypeConfig = {
   rootField: string;
-  rootReturnType: string;        // 根字段返回的类型名（字符串表示）
-  args: string[];                 // 根字段支持的参数名
+  rootReturnType: string;
+  args: string[];
   scalars: string[];
   relations: Record<string, RelationConfig>;
 };
@@ -607,9 +845,6 @@ function shouldReplaceRootField(current: string, existing: string): boolean {
   return false;
 }
 
-/**
- * 带超时和重试的 fetch 函数
- */
 async function fetchWithRetry(
   url: string,
   options: RequestInit,
@@ -621,27 +856,16 @@ async function fetchWithRetry(
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal,
-      });
+      const response = await fetch(url, { ...options, signal: controller.signal });
       clearTimeout(timeout);
-
       if (!response.ok) {
         const errorText = await response.text().catch(() => '');
         throw new Error(`HTTP ${response.status}: ${errorText}`);
       }
-
       return response;
     } catch (error) {
       clearTimeout(timeout);
-
-      // 如果是最后一次重试，抛出错误
-      if (i === retries - 1) {
-        throw error;
-      }
-
-      // 计算等待时间（指数退避）
+      if (i === retries - 1) throw error;
       const waitMs = 2000 * Math.pow(2, i);
       console.warn(`⚠️ 请求失败，${waitMs}ms 后重试 (${i + 1}/${retries}):`, error instanceof Error ? error.message : String(error));
       await new Promise(resolve => setTimeout(resolve, waitMs));
@@ -650,48 +874,34 @@ async function fetchWithRetry(
   throw new Error('Unreachable');
 }
 
-/**
- * 获取 introspection 数据（使用 fetch + 重试）
- */
 async function fetchIntrospection(): Promise<IntrospectionQuery> {
   console.log('📡 Fetching introspection data from Strapi...');
   const url = `${STRAPI_URL}/graphql`;
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
+    'x-ci-introspection-token': CI_INTROSPECTION_TOKEN,
+    'apollo-require-preflight': 'true',
+    'x-apollo-operation-name': 'IntrospectionQuery',
   };
   if (STRAPI_TOKEN) {
     headers['Authorization'] = `Bearer ${STRAPI_TOKEN}`;
   }
 
-  const response = await fetchWithRetry(
-    url,
-    {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ query: getIntrospectionQuery() }),
-    },
-    3,  // 重试次数
-    30000 // 30秒超时
-  );
+  const response = await fetchWithRetry(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ query: getIntrospectionQuery() }),
+  }, 3, 30000);
 
   const { data, errors } = await response.json() as { data?: IntrospectionQuery; errors?: any[] };
-  if (errors) {
-    throw new Error(`GraphQL 错误: ${JSON.stringify(errors)}`);
-  }
-  if (!data) {
-    throw new Error('Introspection 返回数据为空');
-  }
-
+  if (errors) throw new Error(`GraphQL 错误: ${JSON.stringify(errors)}`);
+  if (!data) throw new Error('Introspection 返回数据为空');
   return data;
 }
 
 async function getIntrospectionData(): Promise<IntrospectionQuery> {
-  // 确保缓存目录存在
-  if (!existsSync(CACHE_DIR)) {
-    mkdirSync(CACHE_DIR, { recursive: true });
-  }
+  if (!existsSync(CACHE_DIR)) mkdirSync(CACHE_DIR, { recursive: true });
 
-  // 如果强制刷新或缓存文件不存在，则重新获取
   if (FORCE_REFRESH || !existsSync(SCHEMA_CACHE_PATH)) {
     const data = await fetchIntrospection();
     writeFileSync(SCHEMA_CACHE_PATH, JSON.stringify(data, null, 2));
@@ -699,7 +909,6 @@ async function getIntrospectionData(): Promise<IntrospectionQuery> {
     return data;
   }
 
-  // 读取缓存
   console.log(`📁 Loading introspection from cache: ${SCHEMA_CACHE_PATH}`);
   try {
     const raw = readFileSync(SCHEMA_CACHE_PATH, 'utf-8');
@@ -714,8 +923,6 @@ async function getIntrospectionData(): Promise<IntrospectionQuery> {
 
 async function main() {
   console.log('🚀 Starting schema analysis (with root field metadata)...');
-
-  // 获取 introspection 数据（可能来自缓存，支持重试）
   const introspection = await getIntrospectionData();
   const schema = buildClientSchema(introspection);
 
@@ -732,7 +939,6 @@ async function main() {
 
   for (const [fieldName, field] of Object.entries(queryFields)) {
     console.log(`\n📦 Inspecting root field: ${fieldName}`);
-
     const innerType = unwrapToInner(field.type);
     if (!isObjectType(innerType)) {
       console.log(`  ⏭️  Not an object type: ${innerType}`);
@@ -741,7 +947,6 @@ async function main() {
 
     const typeName = innerType.name;
     const fields = innerType.getFields();
-
     const scalarFieldNames = Object.keys(fields).filter(fname => {
       const fieldType = unwrap(fields[fname].type);
       return isScalarType(fieldType);
@@ -767,32 +972,20 @@ async function main() {
 
     for (const [fname, f] of Object.entries(fields)) {
       const unwrapped = unwrap(f.type);
-      if (isScalarType(unwrapped)) {
-        scalars.push(fname);
-      } else if (isObjectType(unwrapped)) {
-        relations[fname] = { type: unwrapped.name, fields: [] };
-      }
+      if (isScalarType(unwrapped)) scalars.push(fname);
+      else if (isObjectType(unwrapped)) relations[fname] = { type: unwrapped.name, fields: [] };
     }
 
     const actualFieldNames = new Set(Object.keys(fields));
-
     for (const sys of SYSTEM_FIELDS) {
-      if (actualFieldNames.has(sys) && !scalars.includes(sys)) {
-        scalars.push(sys);
-      }
+      if (actualFieldNames.has(sys) && !scalars.includes(sys)) scalars.push(sys);
     }
 
     const rootReturnType = field.type.toString();
     const args = field.args.map(arg => arg.name);
 
     if (!config[typeName]) {
-      config[typeName] = {
-        rootField: fieldName,
-        rootReturnType,
-        args,
-        scalars,
-        relations
-      };
+      config[typeName] = { rootField: fieldName, rootReturnType, args, scalars, relations };
       console.log(`    → Set rootField to '${fieldName}' (first encounter)`);
     } else {
       const existing = config[typeName].rootField;
@@ -817,7 +1010,6 @@ async function main() {
 
   const configPath = join(outDir, 'field-config.json');
   writeFileSync(configPath, JSON.stringify(config, null, 2));
-
   console.log(`\n✅ field-config.json generated with ${Object.keys(config).length} content types`);
 }
 
@@ -833,8 +1025,9 @@ main().catch(err => {
  * - Records root field return type and accepted arguments
  * - Prefers plural list fields
  * - Only adds system fields that actually exist in the type
- * - Caches introspection result to avoid repeated network requests (C6)
+ * - Caches introspection result to avoid repeated network requests
  * - Enhanced error handling: timeout, retry, detailed logging
+ * - Added CI token and CSRF header for production introspection
  */
 
 import {
@@ -858,23 +1051,16 @@ dotenv.config();
 
 const STRAPI_URL = process.env.PUBLIC_STRAPI_API_URL!;
 const STRAPI_TOKEN = process.env.PUBLIC_STRAPI_API_TOKEN;
+const CI_INTROSPECTION_TOKEN = process.env.CI_STRAPI_INTROSPECTION_TOKEN || '';
 
 if (!STRAPI_URL) throw new Error('PUBLIC_STRAPI_API_URL not set');
 
-// 缓存文件路径
 const CACHE_DIR = join(__dirname, '../src/generated');
 const SCHEMA_CACHE_PATH = join(CACHE_DIR, 'schema-introspection.json');
 
-// 可选：通过环境变量控制是否强制刷新缓存
 const FORCE_REFRESH = process.env.FORCE_REFRESH_SCHEMA === 'true';
 
-const SYSTEM_FIELDS = [
-  'id',
-  'documentId',
-  'createdAt',
-  'updatedAt',
-  'publishedAt'
-];
+const SYSTEM_FIELDS = ['id', 'documentId', 'createdAt', 'updatedAt', 'publishedAt'];
 
 type RelationConfig = {
   type: string;
@@ -883,8 +1069,8 @@ type RelationConfig = {
 
 type ContentTypeConfig = {
   rootField: string;
-  rootReturnType: string;        // 根字段返回的类型名（字符串表示）
-  args: string[];                 // 根字段支持的参数名
+  rootReturnType: string;
+  args: string[];
   scalars: string[];
   relations: Record<string, RelationConfig>;
 };
@@ -924,9 +1110,6 @@ function shouldReplaceRootField(current: string, existing: string): boolean {
   return false;
 }
 
-/**
- * 带超时和重试的 fetch 函数
- */
 async function fetchWithRetry(
   url: string,
   options: RequestInit,
@@ -938,27 +1121,16 @@ async function fetchWithRetry(
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal,
-      });
+      const response = await fetch(url, { ...options, signal: controller.signal });
       clearTimeout(timeout);
-
       if (!response.ok) {
         const errorText = await response.text().catch(() => '');
         throw new Error(`HTTP ${response.status}: ${errorText}`);
       }
-
       return response;
     } catch (error) {
       clearTimeout(timeout);
-
-      // 如果是最后一次重试，抛出错误
-      if (i === retries - 1) {
-        throw error;
-      }
-
-      // 计算等待时间（指数退避）
+      if (i === retries - 1) throw error;
       const waitMs = 2000 * Math.pow(2, i);
       console.warn(`⚠️ 请求失败，${waitMs}ms 后重试 (${i + 1}/${retries}):`, error instanceof Error ? error.message : String(error));
       await new Promise(resolve => setTimeout(resolve, waitMs));
@@ -967,48 +1139,34 @@ async function fetchWithRetry(
   throw new Error('Unreachable');
 }
 
-/**
- * 获取 introspection 数据（使用 fetch + 重试）
- */
 async function fetchIntrospection(): Promise<IntrospectionQuery> {
   console.log('📡 Fetching introspection data from Strapi...');
   const url = `${STRAPI_URL}/graphql`;
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
+    'x-ci-introspection-token': CI_INTROSPECTION_TOKEN,
+    'apollo-require-preflight': 'true',
+    'x-apollo-operation-name': 'IntrospectionQuery',
   };
   if (STRAPI_TOKEN) {
     headers['Authorization'] = `Bearer ${STRAPI_TOKEN}`;
   }
 
-  const response = await fetchWithRetry(
-    url,
-    {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ query: getIntrospectionQuery() }),
-    },
-    3,  // 重试次数
-    30000 // 30秒超时
-  );
+  const response = await fetchWithRetry(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ query: getIntrospectionQuery() }),
+  }, 3, 30000);
 
   const { data, errors } = await response.json() as { data?: IntrospectionQuery; errors?: any[] };
-  if (errors) {
-    throw new Error(`GraphQL 错误: ${JSON.stringify(errors)}`);
-  }
-  if (!data) {
-    throw new Error('Introspection 返回数据为空');
-  }
-
+  if (errors) throw new Error(`GraphQL 错误: ${JSON.stringify(errors)}`);
+  if (!data) throw new Error('Introspection 返回数据为空');
   return data;
 }
 
 async function getIntrospectionData(): Promise<IntrospectionQuery> {
-  // 确保缓存目录存在
-  if (!existsSync(CACHE_DIR)) {
-    mkdirSync(CACHE_DIR, { recursive: true });
-  }
+  if (!existsSync(CACHE_DIR)) mkdirSync(CACHE_DIR, { recursive: true });
 
-  // 如果强制刷新或缓存文件不存在，则重新获取
   if (FORCE_REFRESH || !existsSync(SCHEMA_CACHE_PATH)) {
     const data = await fetchIntrospection();
     writeFileSync(SCHEMA_CACHE_PATH, JSON.stringify(data, null, 2));
@@ -1016,7 +1174,6 @@ async function getIntrospectionData(): Promise<IntrospectionQuery> {
     return data;
   }
 
-  // 读取缓存
   console.log(`📁 Loading introspection from cache: ${SCHEMA_CACHE_PATH}`);
   try {
     const raw = readFileSync(SCHEMA_CACHE_PATH, 'utf-8');
@@ -1031,8 +1188,6 @@ async function getIntrospectionData(): Promise<IntrospectionQuery> {
 
 async function main() {
   console.log('🚀 Starting schema analysis (with root field metadata)...');
-
-  // 获取 introspection 数据（可能来自缓存，支持重试）
   const introspection = await getIntrospectionData();
   const schema = buildClientSchema(introspection);
 
@@ -1049,7 +1204,6 @@ async function main() {
 
   for (const [fieldName, field] of Object.entries(queryFields)) {
     console.log(`\n📦 Inspecting root field: ${fieldName}`);
-
     const innerType = unwrapToInner(field.type);
     if (!isObjectType(innerType)) {
       console.log(`  ⏭️  Not an object type: ${innerType}`);
@@ -1058,7 +1212,6 @@ async function main() {
 
     const typeName = innerType.name;
     const fields = innerType.getFields();
-
     const scalarFieldNames = Object.keys(fields).filter(fname => {
       const fieldType = unwrap(fields[fname].type);
       return isScalarType(fieldType);
@@ -1084,32 +1237,20 @@ async function main() {
 
     for (const [fname, f] of Object.entries(fields)) {
       const unwrapped = unwrap(f.type);
-      if (isScalarType(unwrapped)) {
-        scalars.push(fname);
-      } else if (isObjectType(unwrapped)) {
-        relations[fname] = { type: unwrapped.name, fields: [] };
-      }
+      if (isScalarType(unwrapped)) scalars.push(fname);
+      else if (isObjectType(unwrapped)) relations[fname] = { type: unwrapped.name, fields: [] };
     }
 
     const actualFieldNames = new Set(Object.keys(fields));
-
     for (const sys of SYSTEM_FIELDS) {
-      if (actualFieldNames.has(sys) && !scalars.includes(sys)) {
-        scalars.push(sys);
-      }
+      if (actualFieldNames.has(sys) && !scalars.includes(sys)) scalars.push(sys);
     }
 
     const rootReturnType = field.type.toString();
     const args = field.args.map(arg => arg.name);
 
     if (!config[typeName]) {
-      config[typeName] = {
-        rootField: fieldName,
-        rootReturnType,
-        args,
-        scalars,
-        relations
-      };
+      config[typeName] = { rootField: fieldName, rootReturnType, args, scalars, relations };
       console.log(`    → Set rootField to '${fieldName}' (first encounter)`);
     } else {
       const existing = config[typeName].rootField;
@@ -1134,7 +1275,6 @@ async function main() {
 
   const configPath = join(outDir, 'field-config.json');
   writeFileSync(configPath, JSON.stringify(config, null, 2));
-
   console.log(`\n✅ field-config.json generated with ${Object.keys(config).length} content types`);
 }
 
@@ -2256,6 +2396,8 @@ updateCache().catch(err => {
   process.exit(1);
 });
 
+## 文件：scripts/validate-footer-types.ts
+
 ## 文件：src/components/BaseHead.astro
 ---
 import siteConfig from '@/site-config';
@@ -2362,6 +2504,33 @@ const imageUrl = image ? new URL(image.src, siteUrl).toString() : undefined;
   <link rel="preload" href="/favicon.svg" as="image" type="image/svg+xml" />
 </head>
 
+## 文件：src/components/Footer.vue
+<script lang="ts" setup>
+import siteConfig from '@/site-config'
+import { getLinkTarget } from '@/utils/link'
+</script>
+
+<template>
+  <footer class="w-full mt-18 pt-6 pb-8 max-w-3xl text-sm flex flex-col gap-4 border-main border-t !border-op-50 text-dark dark:text-white">
+    <div v-if="siteConfig.footer.navLinks && siteConfig.footer.navLinks.length > 0" class="flex flex-wrap gap-4">
+      <template v-for="(link, index) in siteConfig.footer.navLinks" :key="link.text">
+        <a
+          :aria-label="`${link.text}`" :target="getLinkTarget(link.href)" class="nav-link flex items-center"
+          :href="link.href"
+        >
+          {{ link.text }}
+        </a>
+        <span v-if="index < siteConfig.footer.navLinks.length - 1" op-70> / </span>
+      </template>
+    </div>
+    <div flex>
+      <a nav-link href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank">CC BY-NC-SA 4.0</a>
+      <span op-70>&nbsp;&nbsp;&copy;&nbsp;&nbsp;{{ new Date().getFullYear() }}&nbsp;&nbsp;{{ siteConfig.author
+      }}.</span>
+    </div>
+  </footer>
+</template>
+
 ## 文件：src/components/Header.astro
 ---
 // src/components/Header.astro
@@ -2369,9 +2538,10 @@ import siteConfig from '@/site-config';
 import ThemeToggle from './ThemeToggle.vue';
 import Menu from './Menu.astro';
 import { getMenuTree } from '@/lib/menu';
-import { t, type Locale } from '@/i18n/dict';
+import { type Locale } from '@/i18n/dict';
 import { getLocalizedUrl, getLanguageName } from '@/i18n/utils';
 import { locales } from '@/generated/i18n-config';
+import { getAssetPath, getLocalizedPath, BASE_URL } from '@/lib/env';
 
 interface Props {
   currentLocale?: Locale;
@@ -2381,8 +2551,6 @@ const { currentLocale = 'en' as Locale } = Astro.props;
 
 // ========== 动态菜单逻辑 ==========
 const menuTree = getMenuTree(currentLocale);
-
-// 分离按钮项和普通菜单项
 const buttonItems = menuTree.filter(item => item.isButton);
 const navItems = menuTree.filter(item => !item.isButton);
 
@@ -2398,7 +2566,8 @@ const getFallbackLinks = () => {
 const fallbackLinks = getFallbackLinks();
 // ========== 动态菜单逻辑结束 ==========
 
-const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${currentLocale}`;
+const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') || 
+                   Astro.url.pathname === `${BASE_URL.replace(/\/$/, '')}/${currentLocale}`;
 ---
 
 <header
@@ -2413,12 +2582,12 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
         <a
           href={getLocalizedUrl(new URL('/', Astro.url.origin), currentLocale)}
           class="flex items-center space-x-3 group"
-          aria-label={t(currentLocale, 'navigation.home')}
+          aria-label={siteConfig.title}
         >
           <img
             width="32"
             height="32"
-            src={siteConfig.header.logo.src}
+            src={getAssetPath(siteConfig.header.logo.src)}
             alt={siteConfig.header.logo.alt}
             class="w-8 h-8 transition-transform group-hover:scale-110"
           />
@@ -2436,11 +2605,9 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
 
       <!-- Desktop Navigation -->
       <nav class="hidden md:flex items-center space-x-2">
-        <!-- 动态导航菜单（水平模式） -->
         {navItems.length > 0 ? (
           <Menu items={navItems} currentLocale={currentLocale} horizontal={true} />
         ) : (
-          /* 降级到硬编码链接 */
           <>
             {fallbackLinks.map((link) => (
               <a
@@ -2455,11 +2622,12 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
           </>
         )}
 
-        <!-- 按钮项（如 Contact Us）独立渲染 -->
         {buttonItems.map(item => {
-          const href = item.url?.startsWith('http')
-            ? item.url
-            : `/${currentLocale}${item.url?.startsWith('/') ? item.url.slice(1) : item.url || ''}`;
+          let href = item.url;
+          if (href && !href.startsWith('http')) {
+            // 使用 getLocalizedPath 生成包含 base 和 locale 的路径
+            href = getLocalizedPath(currentLocale, href);
+          }
           return (
             <a
               key={item.documentId}
@@ -2495,8 +2663,7 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
               </a>
             );
           })}
-          
-          <!-- 社交链接 -->
+
           {siteConfig.socialLinks
             .filter(link => link.header && link.href)
             .map((link) => (
@@ -2513,10 +2680,9 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
               </a>
             ))
           }
-          
-          <!-- RSS -->
+
           <a
-            href="/rss.xml"
+            href={getAssetPath('/rss.xml')}
             target="_blank"
             class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400 transition-colors"
             aria-label="RSS Feed"
@@ -2524,13 +2690,12 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
           >
             <i class="i-ri-rss-line text-lg" />
           </a>
-          
-          <!-- 主题切换器 -->
+
           <ThemeToggle client:load />
         </div>
       </nav>
 
-      <!-- Mobile Menu Button (使用 id 便于脚本控制) -->
+      <!-- Mobile Menu Button -->
       <div class="md:hidden">
         <button
           id="mobile-menu-button"
@@ -2545,7 +2710,7 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
     </div>
   </div>
 
-  <!-- Mobile Menu (添加 data-close-mobile-menu 属性) -->
+  <!-- Mobile Menu -->
   <div
     id="mobile-menu"
     class="md:hidden hidden fixed inset-0 bg-white dark:bg-gray-900 z-50 overflow-y-auto"
@@ -2559,7 +2724,7 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
         <img
           width="32"
           height="32"
-          src={siteConfig.header.logo.src}
+          src={getAssetPath(siteConfig.header.logo.src)}
           alt={siteConfig.header.logo.alt}
           class="w-8 h-8"
         />
@@ -2575,11 +2740,9 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
     </div>
 
     <div class="p-4">
-      <!-- 动态导航菜单（移动端模式） -->
       {navItems.length > 0 ? (
         <Menu items={navItems} currentLocale={currentLocale} mobile={true} horizontal={false} />
       ) : (
-        /* 降级方案 */
         <nav class="space-y-2 mb-6">
           {fallbackLinks.map((link) => (
             <a
@@ -2594,13 +2757,13 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
         </nav>
       )}
 
-      <!-- 移动端按钮项 -->
       {buttonItems.length > 0 && (
         <div class="mb-6 pt-4 border-t border-gray-200 dark:border-gray-700">
           {buttonItems.map(item => {
-            const href = item.url?.startsWith('http')
-              ? item.url
-              : `/${currentLocale}${item.url?.startsWith('/') ? item.url.slice(1) : item.url || ''}`;
+            let href = item.url;
+            if (href && !href.startsWith('http')) {
+              href = getLocalizedPath(currentLocale, href);
+            }
             return (
               <a
                 key={item.documentId}
@@ -2620,7 +2783,7 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
       <!-- 语言切换器（移动端） -->
       <div class="mb-6 pt-4 border-t border-gray-200 dark:border-gray-700">
         <h3 class="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3 px-4">
-          {t(currentLocale, 'common.language')}
+          {currentLocale === 'en' ? 'Language' : currentLocale === 'es' ? 'Idioma' : 'Langue'}
         </h3>
         <div class="space-y-2">
           {locales.map((locale: Locale) => {
@@ -2666,7 +2829,7 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
           ))
         }
         <a
-          href="/rss.xml"
+          href={getAssetPath('/rss.xml')}
           target="_blank"
           class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400"
           aria-label="RSS Feed"
@@ -2681,7 +2844,6 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
 </header>
 
 <script lang="ts">
-  // 移动端菜单交互（独立脚本，便于维护）
   document.addEventListener('DOMContentLoaded', () => {
     const menuButton = document.getElementById('mobile-menu-button');
     const mobileMenu = document.getElementById('mobile-menu');
@@ -2702,7 +2864,6 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
     menuButton?.addEventListener('click', toggleMenu);
     closeElements.forEach(el => el.addEventListener('click', closeMenu));
 
-    // 点击外部关闭（移除了类型断言，Astro 会自动处理）
     document.addEventListener('click', (event) => {
       if (!mobileMenu || mobileMenu.classList.contains('hidden')) return;
       if (!mobileMenu.contains(event.target) && !menuButton?.contains(event.target)) {
@@ -2710,7 +2871,6 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
       }
     });
 
-    // ESC 键关闭
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && mobileMenu && !mobileMenu.classList.contains('hidden')) {
         closeMenu();
@@ -2724,6 +2884,7 @@ const isHomePage = Astro.url.pathname === '/' || Astro.url.pathname === `/${curr
 ---
 // src/components/Menu.astro
 import type { MenuNode } from '@/lib/menu';
+import { getLocalizedPath } from '@/lib/env';
 
 export interface Props {
   items: MenuNode[];
@@ -2746,9 +2907,8 @@ const isRoot = level === 0;
 const getHref = (url: string | null | undefined): string => {
   if (!url) return '#';
   if (url.startsWith('http://') || url.startsWith('https://')) return url;
-  const locale = currentLocale || 'en';
-  const normalized = url.startsWith('/') ? url : `/${url}`;
-  return `/${locale}${normalized}`;
+  // 使用 getLocalizedPath 自动添加 base 和 locale
+  return getLocalizedPath(currentLocale, url);
 };
 
 const hasRenderableChildren = (item: MenuNode): boolean => {
@@ -2852,7 +3012,7 @@ const hasRenderableChildren = (item: MenuNode): boolean => {
   .submenu,
   .submenu-level2 {
     display: none;
-    transition: opacity 0.15s ease-out, transform 0.15s ease-out;
+    transition: opacity 0.05s ease-out, transform 0.05s ease-out;
   }
 
   /* 显示状态 */
@@ -3154,6 +3314,8 @@ const htmlContent = hasContent
   <div class={`rich-text-empty ${className}`}>No content available</div>
 )}
 
+## 文件：src/components/RichTextRenderer.vue
+
 ## 文件：src/i18n/dict.ts
 // src/i18n/dict.ts
 import type { Locale } from '@/generated/i18n-config';
@@ -3177,6 +3339,7 @@ export interface I18nDict {
     by: string;
     on: string;
     minRead: string;
+    categories: string;          // 新增：分类标签
   };
   home: {
     welcome: string;
@@ -3193,13 +3356,6 @@ export interface I18nDict {
     description: string;
     returnHome: string;
   };
-  navigation: {
-    home: string;
-    blog: string;
-    projects: string;
-    notes: string;
-    talks: string;
-  };
 }
 
 /**
@@ -3207,7 +3363,6 @@ export interface I18nDict {
  * 使用 process.cwd() 定位项目根目录，确保构建时能正确读取源码中的 JSON
  */
 function loadTranslations(locale: string): I18nDict {
-  // 构建翻译文件所在目录的绝对路径
   const translationsDir = path.join(process.cwd(), 'src/i18n/translations');
   const filePath = path.join(translationsDir, `${locale}.json`);
 
@@ -3244,7 +3399,6 @@ export function t(locale: Locale, key: string, vars?: Record<string, string>): s
   for (const k of keys) {
     if (value === undefined) {
       console.warn(`[i18n] Missing key: ${key} in locale: ${locale}`);
-      // 尝试回退到默认语言
       if (locale !== defaultLocale) {
         return t(defaultLocale, key, vars);
       }
@@ -3274,6 +3428,7 @@ export function getSupportedLocales(): Locale[] {
 // src/i18n/utils.ts
 import type { Locale } from '@/generated/i18n-config';
 import { strapiLocaleMap, getLanguageName, getHtmlLang, getLocaleForFormatting, locales, defaultLocale } from '@/generated/i18n-config';
+import { BASE_URL } from '@/lib/env';
 
 export const LOCALE_MAP = strapiLocaleMap;
 
@@ -3290,32 +3445,40 @@ export function fromStrapiLocale(strapiLocale: string): Locale {
   for (const [key, value] of Object.entries(strapiLocaleMap)) {
     if (value === strapiLocale) return key as Locale;
   }
-  // 后备处理
   if (strapiLocale.startsWith('es')) return 'es' as Locale;
   return 'en' as Locale;
 }
 
 /**
- * 获取本地化URL（所有语言均添加前缀）
+ * 获取本地化URL（自动包含 base 路径）
+ * @param currentUrl 当前页面的 URL 对象
+ * @param targetLocale 目标语言
+ * @returns 完整的本地化 URL（包含 base 和语言前缀）
  */
 export function getLocalizedUrl(currentUrl: URL, targetLocale: Locale): string {
   const pathname = currentUrl.pathname;
+  const base = BASE_URL.replace(/\/$/, '');
 
-  // 移除现有语言前缀
+  // 移除现有语言前缀和 base 前缀，得到纯净路径
   let cleanPath = pathname;
+  // 先移除 base 前缀（如果存在）
+  if (base !== '/' && cleanPath.startsWith(base)) {
+    cleanPath = cleanPath.slice(base.length);
+  }
+  // 再移除语言前缀
   for (const locale of locales) {
     const prefix = `/${locale}`;
-    if (pathname === prefix) {
+    if (cleanPath === prefix) {
       cleanPath = '/';
       break;
-    } else if (pathname.startsWith(`${prefix}/`)) {
-      cleanPath = pathname.slice(prefix.length);
+    } else if (cleanPath.startsWith(`${prefix}/`)) {
+      cleanPath = cleanPath.slice(prefix.length);
       break;
     }
   }
 
-  // 为目标语言添加前缀（包括默认语言）
-  return `/${targetLocale}${cleanPath}`;
+  // 为目标语言添加前缀（包括默认语言），并加上 base
+  return `${base}/${targetLocale}${cleanPath}`;
 }
 
 // 导出配置中的工具函数
@@ -3324,10 +3487,6 @@ export { getLanguageName, getHtmlLang, getLocaleForFormatting };
 ## 文件：src/i18n/translations/en.json
 {
   "common": {
-    "blog": "Blog",
-    "projects": "Projects",
-    "notes": "Notes",
-    "talks": "Talks",
     "readMore": "Read more →",
     "backToBlog": "← Back to blog",
     "availableIn": "Available in other languages",
@@ -3337,7 +3496,8 @@ export { getLanguageName, getHtmlLang, getLocaleForFormatting };
     "lastUpdated": "Last updated",
     "by": "by",
     "on": "on",
-    "minRead": "min read"
+    "minRead": "min read",
+    "categories": "Categories"
   },
   "home": {
     "welcome": "Vitesse theme",
@@ -3353,23 +3513,12 @@ export { getLanguageName, getHtmlLang, getLocaleForFormatting };
     "title": "404 - Page Not Found",
     "description": "Sorry, we couldn't find what you were looking for.",
     "returnHome": "Return Home"
-  },
-  "navigation": {
-    "home": "Home",
-    "blog": "Blog",
-    "projects": "Projects",
-    "notes": "Notes",
-    "talks": "Talks"
   }
 }
 
 ## 文件：src/i18n/translations/es.json
 {
   "common": {
-    "blog": "Blog",
-    "projects": "Proyectos",
-    "notes": "Notas",
-    "talks": "Charlas",
     "readMore": "Leer más →",
     "backToBlog": "← Volver al blog",
     "availableIn": "Disponible en otros idiomas",
@@ -3379,7 +3528,8 @@ export { getLanguageName, getHtmlLang, getLocaleForFormatting };
     "lastUpdated": "Última actualización",
     "by": "por",
     "on": "el",
-    "minRead": "min de lectura"
+    "minRead": "min de lectura",
+    "categories": "Categorías"
   },
   "home": {
     "welcome": "Tema Vitesse",
@@ -3395,23 +3545,12 @@ export { getLanguageName, getHtmlLang, getLocaleForFormatting };
     "title": "404 - Página No Encontrada",
     "description": "Lo sentimos, no pudimos encontrar lo que buscabas.",
     "returnHome": "Volver al Inicio"
-  },
-  "navigation": {
-    "home": "Inicio",
-    "blog": "Blog",
-    "projects": "Proyectos",
-    "notes": "Notas",
-    "talks": "Charlas"
   }
 }
 
 ## 文件：src/i18n/translations/fr.json
 {
   "common": {
-    "blog": "Blog",
-    "projects": "Projets",
-    "notes": "Notes",
-    "talks": "Discours",
     "readMore": "Lire la suite →",
     "backToBlog": "← Retour au blog",
     "availableIn": "Disponible dans d'autres langues",
@@ -3421,7 +3560,8 @@ export { getLanguageName, getHtmlLang, getLocaleForFormatting };
     "lastUpdated": "Dernière mise à jour",
     "by": "par",
     "on": "le",
-    "minRead": "min de lecture"
+    "minRead": "min de lecture",
+    "categories": "Catégories"
   },
   "home": {
     "welcome": "Thème Vitesse",
@@ -3437,13 +3577,6 @@ export { getLanguageName, getHtmlLang, getLocaleForFormatting };
     "title": "404 - Page Non Trouvée",
     "description": "Désolé, nous n'avons pas trouvé ce que vous cherchiez.",
     "returnHome": "Retour à l'accueil"
-  },
-  "navigation": {
-    "home": "Accueil",
-    "blog": "Blog",
-    "projects": "Projets",
-    "notes": "Notes",
-    "talks": "Discours"
   }
 }
 
@@ -3652,25 +3785,47 @@ export const STRAPI_TOKEN = import.meta.env.PUBLIC_STRAPI_API_TOKEN || '';
 export const SITE_URL = import.meta.env.SITE_URL || 'https://astro.lactisoles.com';
 export const IS_PRODUCTION = import.meta.env.PROD;
 
+// 获取 base 路径（用于 GitHub Pages 子目录部署）
+export const BASE_URL = import.meta.env.BASE_URL || '/';
+
 /**
- * 根据相对路径或绝对路径获取完整的图片 URL
+ * 根据相对路径或绝对路径获取完整的图片 URL（Strapi 图片）
  * @param url 图片路径（可能为相对路径或绝对URL）
  * @returns 完整 URL，如果无法拼接则返回 undefined
  */
 export function getFullImageUrl(url?: string): string | undefined {
   if (!url) return undefined;
-  // 已经是绝对 URL（以 http:// 或 https:// 开头）
   if (url.startsWith('http://') || url.startsWith('https://')) {
     return url;
   }
-  // 相对路径，拼接 Strapi 基础 URL
   if (STRAPI_URL) {
-    // 确保 url 以 / 开头，避免双斜杠
     const normalizedUrl = url.startsWith('/') ? url : `/${url}`;
     return `${STRAPI_URL}${normalizedUrl}`;
   }
-  // 无法拼接时，返回 undefined 以明确表示无效
   return undefined;
+}
+
+/**
+ * 获取本地化路径（自动包含 base 和 locale）
+ * @param locale 当前语言
+ * @param path 相对路径（例如 '/blog/my-post' 或 'blog/my-post'）
+ * @returns 完整路径，例如 '/GCE-GITHUB-ASTRO/en/blog/my-post'
+ */
+export function getLocalizedPath(locale: string, path: string = ''): string {
+  const base = BASE_URL.replace(/\/$/, '');
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return `${base}/${locale}${normalizedPath}`;
+}
+
+/**
+ * 获取静态资源路径（自动包含 base）
+ * @param relativePath 相对路径，例如 '/hero.jpg' 或 'hero.jpg'
+ * @returns 完整路径，例如 '/GCE-GITHUB-ASTRO/hero.jpg'
+ */
+export function getAssetPath(relativePath: string): string {
+  const base = BASE_URL.replace(/\/$/, '');
+  const path = relativePath.startsWith('/') ? relativePath : `/${relativePath}`;
+  return `${base}${path}`;
 }
 
 /**
@@ -3692,6 +3847,8 @@ export function getStrapiHeaders(): HeadersInit {
 export function getStrapiGraphQLEndpoint(): string {
   return `${STRAPI_URL}/graphql`;
 }
+
+## 文件：src/lib/footer-default.ts
 
 ## 文件：src/lib/menu.ts
 // src/lib/menu.ts
@@ -3855,7 +4012,6 @@ export const requestQueue = new RequestQueue(2, 1000);
 ## 文件：src/pages/[locale]/404.astro
 ---
 import BaseLayout from '@/layouts/BaseLayout.astro';
-import { t } from '@/i18n/dict';
 import type { Locale } from '@/types';
 import { locales } from '@/generated/i18n-config';
 
@@ -3866,19 +4022,50 @@ export async function getStaticPaths() {
 }
 
 const currentLocale = Astro.currentLocale as Locale;
+
+// ✅ 静态文本对象 - 完全独立于翻译文件
+const navLinks = {
+  en: { blog: 'Blog', projects: 'Projects', notes: 'Notes' },
+  es: { blog: 'Blog', projects: 'Proyectos', notes: 'Notas' },
+  fr: { blog: 'Blog', projects: 'Projets', notes: 'Notes' },
+} as const;
+
+const prompts = {
+  en: 'Or try one of these pages:',
+  es: 'O prueba una de estas páginas:',
+  fr: 'Ou essayez l\'une de ces pages:',
+} as const;
+
+const titles = {
+  en: '404 - Page Not Found',
+  es: '404 - Página No Encontrada',
+  fr: '404 - Page Non Trouvée',
+} as const;
+
+const descriptions = {
+  en: 'Sorry, we couldn\'t find what you were looking for.',
+  es: 'Lo sentimos, no pudimos encontrar lo que buscabas.',
+  fr: 'Désolé, nous n\'avons pas trouvé ce que vous cherchiez.',
+} as const;
+
+const returnHome = {
+  en: 'Return Home',
+  es: 'Volver al Inicio',
+  fr: 'Retour à l\'accueil',
+} as const;
 ---
 
 <BaseLayout
-  title={t(currentLocale, 'notFound.title')}
-  description={t(currentLocale, 'notFound.description')}
+  title={titles[currentLocale]}
+  description={descriptions[currentLocale]}
   locale={currentLocale}
 >
   <div class="min-h-[70vh] flex flex-col items-center justify-center text-center px-4">
     <div class="mb-8">
       <div class="text-9xl font-bold text-gray-300 dark:text-gray-700 mb-2">404</div>
-      <h1 class="text-3xl font-bold mb-4">{t(currentLocale, 'notFound.title')}</h1>
+      <h1 class="text-3xl font-bold mb-4">{titles[currentLocale]}</h1>
       <p class="text-xl text-gray-600 dark:text-gray-400 max-w-md mx-auto">
-        {t(currentLocale, 'notFound.description')}
+        {descriptions[currentLocale]}
       </p>
     </div>
 
@@ -3887,24 +4074,20 @@ const currentLocale = Astro.currentLocale as Locale;
         href={`/${currentLocale}`}
         class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 transition-colors"
       >
-        {t(currentLocale, 'notFound.returnHome')}
+        {returnHome[currentLocale]}
       </a>
 
       <div class="text-sm text-gray-500 dark:text-gray-400">
-        <p class="mb-2">
-          {currentLocale === 'en'
-            ? 'Or try one of these pages:'
-            : 'O prueba una de estas páginas:'}
-        </p>
+        <p class="mb-2">{prompts[currentLocale]}</p>
         <div class="flex flex-wrap justify-center gap-3">
           <a href={`/${currentLocale}/blog`} class="text-blue-600 dark:text-blue-400 hover:underline">
-            {t(currentLocale, 'navigation.blog')}
+            {navLinks[currentLocale].blog}
           </a>
           <a href={`/${currentLocale}/projects`} class="text-blue-600 dark:text-blue-400 hover:underline">
-            {t(currentLocale, 'navigation.projects')}
+            {navLinks[currentLocale].projects}
           </a>
           <a href={`/${currentLocale}/notes`} class="text-blue-600 dark:text-blue-400 hover:underline">
-            {t(currentLocale, 'navigation.notes')}
+            {navLinks[currentLocale].notes}
           </a>
         </div>
       </div>
@@ -3916,34 +4099,63 @@ const currentLocale = Astro.currentLocale as Locale;
 ---
 // src/pages/[locale]/[...slug].astro
 import BaseLayout from '@/layouts/BaseLayout.astro';
-import { t } from '@/i18n/dict';
 import type { Locale } from '@/types';
 import { locales } from '@/generated/i18n-config';
 
 export async function getStaticPaths() {
-  // 修复：返回有效的slug参数，不是数组
   return locales.map((locale: Locale) => ({
     params: {
       locale,
-      slug: 'not-found' // 改为字符串，而不是数组
+      slug: 'not-found'
     },
   }));
 }
 
 const currentLocale = Astro.currentLocale as Locale;
+
+// ✅ 静态文本对象 - 完全独立于翻译文件
+const navLinks = {
+  en: { blog: 'Blog', projects: 'Projects', notes: 'Notes' },
+  es: { blog: 'Blog', projects: 'Proyectos', notes: 'Notas' },
+  fr: { blog: 'Blog', projects: 'Projets', notes: 'Notes' },
+} as const;
+
+const prompts = {
+  en: 'Or try one of these pages:',
+  es: 'O prueba una de estas páginas:',
+  fr: 'Ou essayez l\'une de ces pages:',
+} as const;
+
+const titles = {
+  en: '404 - Page Not Found',
+  es: '404 - Página No Encontrada',
+  fr: '404 - Page Non Trouvée',
+} as const;
+
+const descriptions = {
+  en: 'Sorry, we couldn\'t find what you were looking for.',
+  es: 'Lo sentimos, no pudimos encontrar lo que buscabas.',
+  fr: 'Désolé, nous n\'avons pas trouvé ce que vous cherchiez.',
+} as const;
+
+const returnHome = {
+  en: 'Return Home',
+  es: 'Volver al Inicio',
+  fr: 'Retour à l\'accueil',
+} as const;
 ---
 
 <BaseLayout
-  title={t(currentLocale, 'notFound.title')}
-  description={t(currentLocale, 'notFound.description')}
+  title={titles[currentLocale]}
+  description={descriptions[currentLocale]}
   locale={currentLocale}
 >
   <div class="min-h-[70vh] flex flex-col items-center justify-center text-center px-4">
     <div class="mb-8">
       <div class="text-9xl font-bold text-gray-300 dark:text-gray-700 mb-2">404</div>
-      <h1 class="text-3xl font-bold mb-4">{t(currentLocale, 'notFound.title')}</h1>
+      <h1 class="text-3xl font-bold mb-4">{titles[currentLocale]}</h1>
       <p class="text-xl text-gray-600 dark:text-gray-400 max-w-md mx-auto">
-        {t(currentLocale, 'notFound.description')}
+        {descriptions[currentLocale]}
       </p>
     </div>
 
@@ -3952,24 +4164,20 @@ const currentLocale = Astro.currentLocale as Locale;
         href={`/${currentLocale}`}
         class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 transition-colors"
       >
-        {t(currentLocale, 'notFound.returnHome')}
+        {returnHome[currentLocale]}
       </a>
 
       <div class="text-sm text-gray-500 dark:text-gray-400">
-        <p class="mb-2">
-          {currentLocale === 'en'
-            ? 'Or try one of these pages:'
-            : 'O prueba una de estas páginas:'}
-        </p>
+        <p class="mb-2">{prompts[currentLocale]}</p>
         <div class="flex flex-wrap justify-center gap-3">
           <a href={`/${currentLocale}/blog`} class="text-blue-600 dark:text-blue-400 hover:underline">
-            {t(currentLocale, 'navigation.blog')}
+            {navLinks[currentLocale].blog}
           </a>
           <a href={`/${currentLocale}/projects`} class="text-blue-600 dark:text-blue-400 hover:underline">
-            {t(currentLocale, 'navigation.projects')}
+            {navLinks[currentLocale].projects}
           </a>
           <a href={`/${currentLocale}/notes`} class="text-blue-600 dark:text-blue-400 hover:underline">
-            {t(currentLocale, 'navigation.notes')}
+            {navLinks[currentLocale].notes}
           </a>
         </div>
       </div>
@@ -3981,13 +4189,15 @@ const currentLocale = Astro.currentLocale as Locale;
 ---
 // src/pages/[locale]/blog/[slug].astro
 import BaseLayout from '@/layouts/BaseLayout.astro';
-import RichTextRenderer from '@/components/RichTextRenderer.astro';
 import { locales, type Locale, getLanguageName } from '@/generated/i18n-config';
 import { getAllContent } from '@/lib/content-cache';
 import { t } from '@/i18n/dict';
 import type { Blog } from '@/generated/graphql-types';
-import { Image } from 'astro:assets';
-import { getFullImageUrl } from '@/lib/env'; // 统一导入
+import { getFullImageUrl, getLocalizedPath } from '@/lib/env';
+// 引入 Markdown 渲染器（如未安装 marked，请先 npm install marked）
+import { marked } from 'marked';
+// 如果您的项目已有 RichTextRenderer 并能处理 Strapi JSON，可以保留；否则使用 marked 作为 fallback
+import RichTextRenderer from '@/components/RichTextRenderer.astro';
 
 export async function getStaticPaths() {
   const blogMap = getAllContent<Blog>('blog');
@@ -4016,7 +4226,7 @@ interface Props {
 const { blog } = Astro.props;
 const { locale } = Astro.params as { locale: Locale };
 
-// 从 localizations 获取其他语言版本（过滤当前语言）
+// 处理本地化链接
 const otherLanguages = (blog.localizations || [])
   .filter((loc: any) => loc.locale !== locale)
   .map((loc: any) => ({
@@ -4026,103 +4236,100 @@ const otherLanguages = (blog.localizations || [])
     documentId: loc.documentId,
   }));
 
-// 预计算需要翻译的文本
+// 处理分类
+const categories = Array.isArray(blog.categories) ? blog.categories : (blog.categories ? [blog.categories] : []);
+
+// 翻译
 const translations = {
   availableIn: t(locale, 'common.availableIn'),
   backToBlog: t(locale, 'common.backToBlog'),
   lastUpdated: t(locale, 'common.lastUpdated'),
   minRead: t(locale, 'common.minRead'),
+  categories: t(locale, 'common.categories'),
 };
 
-// 使用统一函数获取完整图片 URL
-const coverImageUrl = getFullImageUrl(blog.cover?.url);
-const coverAlt = blog.cover?.alternativeText || blog.title;
+// 处理封面图片（数组）
+const coverItem = Array.isArray(blog.cover) ? blog.cover[0] : blog.cover;
+const coverImageUrl = getFullImageUrl(coverItem?.url);
+const coverAlt = coverItem?.alternativeText || blog.title;
+
+// 处理内容渲染
+let contentHtml: string | null = null;
+let useRichTextRenderer = false;
+
+// 判断 content 类型
+if (blog.content) {
+  if (typeof blog.content === 'string') {
+    // 如果是 Markdown 字符串，使用 marked 渲染
+    contentHtml = await marked.parse(blog.content);
+  } else if (Array.isArray(blog.content)) {
+    // 如果是 Strapi 富文本 JSON 数组，尝试使用 RichTextRenderer（需确保它能处理）
+    // 如果 RichTextRenderer 无法处理，可以降级提取纯文本
+    useRichTextRenderer = true;
+  } else {
+    // 其他情况，转为字符串
+    contentHtml = String(blog.content);
+  }
+}
 ---
 
-<BaseLayout
-  title={blog.title}
-  description={blog.excerpt || blog.title}
-  pageType="article"
-  locale={locale}
-  image={coverImageUrl ? { src: coverImageUrl, alt: coverAlt } : undefined}
->
+<BaseLayout title={blog.title} description={blog.description || blog.title} pageType="article" locale={locale} image={coverImageUrl ? { src: coverImageUrl, alt: coverAlt } : undefined}>
   <article class="max-w-3xl mx-auto">
-    <!-- 文章头部 -->
     <header class="mb-8">
       <h1 class="text-4xl md:text-5xl font-bold mb-4">{blog.title}</h1>
 
       <div class="flex flex-wrap items-center gap-4 text-gray-600 dark:text-gray-400 mb-6">
+        <div class="flex items-center"><span class="font-medium">{blog.author}</span></div>
         <div class="flex items-center">
-          <span class="font-medium">{blog.author}</span>
-        </div>
-
-        <div class="flex items-center">
-          <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
-            <path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clip-rule="evenodd" />
-          </svg>
+          <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clip-rule="evenodd" /></svg>
           <time datetime={blog.publishedAt}>
-            {new Date(blog.publishedAt).toLocaleDateString(locale, {
-              year: 'numeric',
-              month: 'long',
-              day: 'numeric',
-            })}
+            {new Date(blog.publishedAt).toLocaleDateString(locale, { year: 'numeric', month: 'long', day: 'numeric' })}
           </time>
         </div>
-
         <div class="flex items-center">
-          <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
-            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd" />
-          </svg>
-          <span>
-            {Math.ceil((blog.content || []).length / 100)} {translations.minRead}
-          </span>
+          <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd" /></svg>
+          <span>{Math.ceil((blog.content || []).length / 100)} {translations.minRead}</span>
         </div>
+
+        {categories.length > 0 && (
+          <div class="flex items-center gap-2">
+            <span class="text-sm text-gray-500 dark:text-gray-400">{translations.categories}:</span>
+            <div class="flex flex-wrap gap-2">
+              {categories.map((cat: any) => (
+                <a key={cat.documentId} href={getLocalizedPath(locale, `/blog/category/${cat.slug}`)} class="px-3 py-1 text-xs rounded-full bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors" title={cat.title}>{cat.title}</a>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {coverImageUrl && (
         <div class="mb-8">
-          <Image
-            src={coverImageUrl}
-            alt={coverAlt}
-            width={1200}
-            height={630}
-            class="w-full h-auto max-h-96 object-cover rounded-xl shadow-lg"
-            loading="eager"
-            decoding="async"
-            format="webp"
-          />
-          {blog.cover?.alternativeText && (
-            <p class="text-center text-sm text-gray-500 dark:text-gray-400 mt-2">
-              {blog.cover.alternativeText}
-            </p>
-          )}
+          <img src={coverImageUrl} alt={coverAlt} width={1200} height={630} class="w-full h-auto max-h-96 object-cover rounded-xl shadow-lg" loading="eager" decoding="async" />
+          {coverItem?.alternativeText && <p class="text-center text-sm text-gray-500 dark:text-gray-400 mt-2">{coverItem.alternativeText}</p>}
         </div>
       )}
     </header>
 
-    <!-- 文章内容 -->
+    <!-- 文章内容渲染 -->
     <div class="prose dark:prose-invert prose-lg max-w-none mb-12">
-      <RichTextRenderer content={blog.content} />
+      {useRichTextRenderer ? (
+        <RichTextRenderer content={blog.content} />
+      ) : contentHtml ? (
+        <div set:html={contentHtml} />
+      ) : (
+        <p class="text-gray-500 italic">No content available</p>
+      )}
     </div>
 
-    <!-- 文章底部 -->
     <footer class="pt-8 border-t border-gray-200 dark:border-gray-700">
       {otherLanguages.length > 0 && (
         <div class="mb-8 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
-          <h3 class="text-lg font-semibold mb-3 text-blue-800 dark:text-blue-300">
-            {translations.availableIn}
-          </h3>
+          <h3 class="text-lg font-semibold mb-3 text-blue-800 dark:text-blue-300">{translations.availableIn}</h3>
           <div class="flex flex-wrap gap-2">
             {otherLanguages.map(({ locale: lang, slug, title }) => (
-              <a
-                key={lang}
-                href={`/${lang}/blog/${slug}`}
-                class="inline-flex items-center px-4 py-2 bg-white dark:bg-gray-800 border border-blue-200 dark:border-blue-700 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors"
-                title={title}
-              >
-                <span class="text-blue-700 dark:text-blue-300 font-medium">
-                  {getLanguageName(lang)}
-                </span>
+              <a key={lang} href={getLocalizedPath(lang, `/blog/${slug}`)} class="inline-flex items-center px-4 py-2 bg-white dark:bg-gray-800 border border-blue-200 dark:border-blue-700 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors" title={title}>
+                <span class="text-blue-700 dark:text-blue-300 font-medium">{getLanguageName(lang)}</span>
               </a>
             ))}
           </div>
@@ -4130,25 +4337,12 @@ const coverAlt = blog.cover?.alternativeText || blog.title;
       )}
 
       <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-        <a
-          href={`/${locale}/blog`}
-          class="inline-flex items-center text-blue-600 dark:text-blue-400 hover:underline font-medium"
-        >
-          <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-          </svg>
+        <a href={getLocalizedPath(locale, '/blog')} class="inline-flex items-center text-blue-600 dark:text-blue-400 hover:underline font-medium">
+          <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
           {translations.backToBlog}
         </a>
-
         <div class="text-sm text-gray-500 dark:text-gray-400">
-          {translations.lastUpdated}:{' '}
-          <time datetime={blog.updatedAt}>
-            {new Date(blog.updatedAt).toLocaleDateString(locale, {
-              year: 'numeric',
-              month: 'short',
-              day: 'numeric',
-            })}
-          </time>
+          {translations.lastUpdated}: <time datetime={blog.updatedAt}>{new Date(blog.updatedAt).toLocaleDateString(locale, { year: 'numeric', month: 'short', day: 'numeric' })}</time>
         </div>
       </div>
     </footer>
@@ -4163,7 +4357,7 @@ import { getContentList } from '@/lib/content-cache';
 import type { Blog } from '@/generated/graphql-types';
 import { t } from '@/i18n/dict';
 import { Image } from 'astro:assets';
-import { getFullImageUrl } from '@/lib/env'; // 统一导入
+import { getFullImageUrl, getLocalizedPath } from '@/lib/env';
 
 export async function getStaticPaths() {
   return locales.map((locale) => ({
@@ -4189,38 +4383,22 @@ const blogs = getContentList<Blog>('blog', locale);
     ) : (
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
         {blogs.map((blog) => {
-          const coverImageUrl = getFullImageUrl(blog.cover?.url);
-          const coverAlt = blog.cover?.alternativeText || blog.title;
+          // 处理 cover 数组：取第一个图片对象
+          const coverItem = Array.isArray(blog.cover) ? blog.cover[0] : blog.cover;
+          const coverImageUrl = getFullImageUrl(coverItem?.url);
+          const coverAlt = coverItem?.alternativeText || blog.title;
+          const blogUrl = getLocalizedPath(locale, `/blog/${blog.slug}`);
           return (
-            <article
-              key={blog.documentId}
-              class="card bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden hover:shadow-xl transition-shadow duration-300"
-            >
+            <article key={blog.documentId} class="card bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden hover:shadow-xl transition-shadow duration-300">
               {coverImageUrl && (
-                <a href={`/${locale}/blog/${blog.slug}`}>
-                  <Image
-                    src={coverImageUrl}
-                    alt={coverAlt}
-                    width={600}
-                    height={400}
-                    class="w-full h-48 object-cover"
-                    loading="lazy"
-                    decoding="async"
-                    format="webp"
-                  />
+                <a href={blogUrl}>
+                  <Image src={coverImageUrl} alt={coverAlt} width={600} height={400} class="w-full h-48 object-cover" loading="lazy" decoding="async" format="webp" />
                 </a>
               )}
-
               <div class="p-6">
                 <h2 class="text-2xl font-bold mb-3">
-                  <a
-                    href={`/${locale}/blog/${blog.slug}`}
-                    class="hover:text-primary transition-colors"
-                  >
-                    {blog.title}
-                  </a>
+                  <a href={blogUrl} class="hover:text-primary transition-colors">{blog.title}</a>
                 </h2>
-
                 <div class="text-sm text-gray-600 dark:text-gray-400 mb-4 flex items-center">
                   {blog.author && (
                     <>
@@ -4236,17 +4414,8 @@ const blogs = getContentList<Blog>('blog', locale);
                     })}
                   </time>
                 </div>
-
-                {blog.excerpt && (
-                  <p class="text-gray-700 dark:text-gray-300 mb-4 line-clamp-3">
-                    {blog.excerpt}
-                  </p>
-                )}
-
-                <a
-                  href={`/${locale}/blog/${blog.slug}`}
-                  class="inline-flex items-center text-primary hover:underline font-medium"
-                >
+                {blog.excerpt && <p class="text-gray-700 dark:text-gray-300 mb-4 line-clamp-3">{blog.excerpt}</p>}
+                <a href={blogUrl} class="inline-flex items-center text-primary hover:underline font-medium">
                   {t(locale, 'blog.readMore')}
                   <i class="i-carbon-arrow-right ml-2"></i>
                 </a>
@@ -4268,7 +4437,7 @@ import { getContentList } from '@/lib/content-cache';
 import type { Blog } from '@/generated/graphql-types';
 import { t } from '@/i18n/dict';
 import { Image } from 'astro:assets';
-import { getFullImageUrl } from '@/lib/env'; // 统一导入
+import { getFullImageUrl, getLocalizedPath } from '@/lib/env';
 
 export async function getStaticPaths() {
   return locales.map((locale) => ({
@@ -4297,12 +4466,15 @@ const latestBlogs = allBlogs.slice(0, 3);
       {latestBlogs.length > 0 ? (
         <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           {latestBlogs.map((blog) => {
-            const coverImageUrl = getFullImageUrl(blog.cover?.url);
-            const coverAlt = blog.cover?.alternativeText || blog.title;
+            // 处理 cover 数组：取第一个图片对象
+            const coverItem = Array.isArray(blog.cover) ? blog.cover[0] : blog.cover;
+            const coverImageUrl = getFullImageUrl(coverItem?.url);
+            const coverAlt = coverItem?.alternativeText || blog.title;
+            const blogUrl = getLocalizedPath(locale, `/blog/${blog.slug}`);
             return (
               <article key={blog.documentId} class="bg-white dark:bg-gray-800 rounded-lg shadow-md overflow-hidden hover:shadow-lg transition-shadow">
                 {coverImageUrl && (
-                  <a href={`/${locale}/blog/${blog.slug}`}>
+                  <a href={blogUrl}>
                     <Image
                       src={coverImageUrl}
                       alt={coverAlt}
@@ -4317,10 +4489,7 @@ const latestBlogs = allBlogs.slice(0, 3);
                 )}
                 <div class="p-6">
                   <h3 class="text-xl font-semibold mb-2">
-                    <a
-                      href={`/${locale}/blog/${blog.slug}`}
-                      class="text-gray-900 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
-                    >
+                    <a href={blogUrl} class="text-gray-900 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
                       {blog.title}
                     </a>
                   </h3>
@@ -4335,13 +4504,8 @@ const latestBlogs = allBlogs.slice(0, 3);
                       })}
                     </time>
                   </div>
-                  {blog.excerpt && (
-                    <p class="text-gray-600 dark:text-gray-300 mb-4">{blog.excerpt}</p>
-                  )}
-                  <a
-                    href={`/${locale}/blog/${blog.slug}`}
-                    class="inline-flex items-center text-blue-600 dark:text-blue-400 hover:underline font-medium"
-                  >
+                  {blog.excerpt && <p class="text-gray-600 dark:text-gray-300 mb-4">{blog.excerpt}</p>}
+                  <a href={blogUrl} class="inline-flex items-center text-blue-600 dark:text-blue-400 hover:underline font-medium">
                     {t(locale, 'common.readMore')}
                   </a>
                 </div>
@@ -4350,17 +4514,12 @@ const latestBlogs = allBlogs.slice(0, 3);
           })}
         </div>
       ) : (
-        <p class="text-gray-600 dark:text-gray-400 text-center py-8">
-          {t(locale, 'common.noPosts')}
-        </p>
+        <p class="text-gray-600 dark:text-gray-400 text-center py-8">{t(locale, 'common.noPosts')}</p>
       )}
 
       {latestBlogs.length > 0 && (
         <div class="text-center mt-8">
-          <a
-            href={`/${locale}/blog`}
-            class="inline-flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 transition-colors"
-          >
+          <a href={getLocalizedPath(locale, '/blog')} class="inline-flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 transition-colors">
             {t(locale, 'blog.allPosts')}
           </a>
         </div>
@@ -4371,22 +4530,12 @@ const latestBlogs = allBlogs.slice(0, 3);
     <section class="text-center pt-8 border-t border-gray-200 dark:border-gray-700">
       <h3 class="text-2xl font-bold mb-6">{t(locale, 'home.findMeOn')}</h3>
       <div class="flex flex-wrap justify-center gap-4">
-        {siteConfig.socialLinks
-          .filter(link => link.href)
-          .map((link) => (
-            <a
-              key={link.text}
-              href={link.href}
-              target="_blank"
-              rel="noopener noreferrer"
-              class="inline-flex items-center space-x-2 px-4 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
-              aria-label={link.text}
-            >
-              <i class={link.icon}></i>
-              <span>{link.text}</span>
-            </a>
-          ))
-        }
+        {siteConfig.socialLinks.filter(link => link.href).map((link) => (
+          <a key={link.text} href={link.href} target="_blank" rel="noopener noreferrer" class="inline-flex items-center space-x-2 px-4 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors" aria-label={link.text}>
+            <i class={link.icon}></i>
+            <span>{link.text}</span>
+          </a>
+        ))}
       </div>
     </section>
   </div>
@@ -4401,6 +4550,7 @@ import { defaultLocale, locales, type Locale } from '@/generated/i18n-config';
 import { getContentList } from '@/lib/content-cache';
 import type { Blog } from '@/generated/graphql-types';
 import type { APIContext } from 'astro';
+import { getLocalizedPath } from '@/lib/env';
 
 export async function GET(context: APIContext) {
   const url = new URL(context.request.url);
@@ -4417,7 +4567,7 @@ export async function GET(context: APIContext) {
     items: publishedBlogs.map((blog) => ({
       title: blog.title,
       pubDate: new Date(blog.publishedAt),
-      link: `/${locale}/blog/${blog.slug}/`,
+      link: getLocalizedPath(locale, `/blog/${blog.slug}/`),
       description: blog.excerpt || blog.title,
     })),
     customData: `<language>${locale}</language>`,
@@ -4733,6 +4883,71 @@ export interface DynamicQueryResult<T = Record<string, any>> {
     "dist"
   ]
 }
+
+## 文件：uno.config.ts
+import {
+  defineConfig,
+  presetAttributify,
+  presetIcons,
+  presetTypography,
+  presetUno,
+  presetWebFonts,
+  transformerDirectives,
+  transformerVariantGroup,
+} from 'unocss'
+
+export default defineConfig({
+  shortcuts: [
+    {
+      'bg-main': 'bg-hex-eef5fc dark:bg-hex-0d1117',
+      'text-main': 'text-hex-555555 dark:text-hex-bbbbbb',
+      'text-link': 'text-dark dark:text-white ',
+      'border-main': 'border-truegray-300 dark:border-truegray-600',
+    },
+    {
+      'text-title': 'text-link text-4xl font-800',
+      'nav-link': 'text-link opacity-70 hover:opacity-100 transition-opacity duration-200 cursor-pointer',
+      'prose-link': 'text-link text-nowrap cursor-pointer border-b-1 !border-opacity-30 hover:!border-opacity-100 border-neutral-500 hover:border-truegray-600 dark:border-neutral-500 hover:dark:border-truegray-400 transition-border-color duration-200 decoration-none',
+      'container-link': 'p-2 opacity-60 hover:opacity-100 cursor-pointer hover:bg-truegray-500 !bg-opacity-10 transition-colors transition-opacity duration-200',
+    },
+    {
+      'hr-line': 'w-14 mx-auto my-8 border-solid border-1px !border-truegray-200 !dark:border-truegray-800',
+    },
+  ],
+  presets: [
+    presetUno(),
+    presetAttributify(),
+    presetIcons({
+      scale: 1.2,
+      prefix: 'i-',
+      extraProperties: {
+        display: 'inline-block',
+      },
+    }),
+    presetTypography(),
+    presetWebFonts({
+      fonts: {
+        sans: 'Inter:400,600,800',
+        mono: 'DM Mono:400,600',
+      },
+    }),
+  ],
+  transformers: [transformerDirectives(), transformerVariantGroup()],
+  safelist: [
+    'i-ri-file-list-2-line',
+    'i-carbon-campsite',
+    'i-simple-icons-github',
+    'i-simple-icons-x',
+    'i-simple-icons-linkedin',
+    'i-simple-icons-instagram',
+    'i-simple-icons-youtube',
+    'i-simple-icons-bilibili',
+    'i-simple-icons-zhihu',
+    'i-simple-icons-sinaweibo',
+    'i-ri-github-line',
+    'i-ri-twitter-x-line',
+  ],
+})
 
 ## 文件：webhook-handler.js
 import http from 'node:http';

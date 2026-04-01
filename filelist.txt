@@ -1,4 +1,5 @@
 .env
+.github/workflows/webhook-trigger.yml
 astro.config.ts
 build.sh
 codegen-dynamic.config.js
@@ -12,10 +13,13 @@ scripts/build-content-cache.ts
 scripts/fetch-strapi-config.ts
 scripts/generate-queries-correct.ts
 scripts/update-cache-entry.ts
+scripts/validate-footer-types.ts
 src/components/BaseHead.astro
+src/components/Footer.vue
 src/components/Header.astro
 src/components/Menu.astro
 src/components/RichTextRenderer.astro
+src/components/RichTextRenderer.vue
 src/i18n/dict.ts
 src/i18n/utils.ts
 src/i18n/translations/en.json
@@ -24,6 +28,7 @@ src/i18n/translations/fr.json
 src/layouts/BaseLayout.astro
 src/lib/content-cache.ts
 src/lib/env.ts
+src/lib/footer-default.ts
 src/lib/menu.ts
 src/lib/request-queue.ts
 src/pages/[locale]/404.astro
@@ -36,4 +41,5 @@ src/pages/rss.xml.ts
 src/site-config.ts
 src/types.ts
 tsconfig.json
+uno.config.ts
 webhook-handler.js

@@ -2,11 +2,10 @@
 /**
  * Strapi v5 schema analyzer with root field metadata
  * - Records root field return type and accepted arguments
- * - Prefers plural list fields
- * - Only adds system fields that actually exist in the type
- * - Caches introspection result to avoid repeated network requests
- * - Enhanced error handling: timeout, retry, detailed logging
- * - Added CI token and CSRF header for production introspection
+ * - Prefers plural list fields for collections
+ * - Adds system fields that actually exist in the type
+ * - Identifies Single Types (isSingle flag)
+ * - **识别以 Component 开头的类型作为组件，包含其所有标量字段**
  */
 
 import {
@@ -19,6 +18,8 @@ import {
   isListType,
   GraphQLType,
   IntrospectionQuery,
+  isInterfaceType,
+  isUnionType,
 } from 'graphql';
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
@@ -36,10 +37,33 @@ if (!STRAPI_URL) throw new Error('PUBLIC_STRAPI_API_URL not set');
 
 const CACHE_DIR = join(__dirname, '../src/generated');
 const SCHEMA_CACHE_PATH = join(CACHE_DIR, 'schema-introspection.json');
-
 const FORCE_REFRESH = process.env.FORCE_REFRESH_SCHEMA === 'true';
 
 const SYSTEM_FIELDS = ['id', 'documentId', 'createdAt', 'updatedAt', 'publishedAt'];
+
+// 需要跳过的系统类型（不记录为内容类型或组件）
+const SKIP_SYSTEM_TYPES = [
+  'UploadFile',
+  'I18NLocale',
+  'ReviewWorkflowsWorkflow',
+  'ReviewWorkflowsWorkflowStage',
+  'UsersPermissionsRole',
+  'UsersPermissionsUser',
+  'UsersPermissionsMe',
+  'UsersPermissionsPermission',
+  'Query',
+  'Mutation',
+  'Boolean',
+  'String',
+  'Int',
+  'Float',
+  'ID',
+  'DateTime',
+  'JSON',
+  'Upload',
+  'PaginationArg',
+  'Pagination',
+];
 
 type RelationConfig = {
   type: string;
@@ -47,11 +71,13 @@ type RelationConfig = {
 };
 
 type ContentTypeConfig = {
-  rootField: string;
-  rootReturnType: string;
-  args: string[];
+  rootField?: string;
+  rootReturnType?: string;
+  args?: string[];
   scalars: string[];
-  relations: Record<string, RelationConfig>;
+  relations: Record<string, RelationConfig | RelationConfig[]>;
+  isSingle?: boolean;
+  isComponent?: boolean;
 };
 
 type ConfigMap = Record<string, ContentTypeConfig>;
@@ -166,7 +192,7 @@ async function getIntrospectionData(): Promise<IntrospectionQuery> {
 }
 
 async function main() {
-  console.log('🚀 Starting schema analysis (with root field metadata)...');
+  console.log('🚀 Starting schema analysis (with root field metadata & component detection)...');
   const introspection = await getIntrospectionData();
   const schema = buildClientSchema(introspection);
 
@@ -181,6 +207,7 @@ async function main() {
 
   const config: ConfigMap = {};
 
+  // ========== 1. 分析根查询字段，识别内容类型 ==========
   for (const [fieldName, field] of Object.entries(queryFields)) {
     console.log(`\n📦 Inspecting root field: ${fieldName}`);
     const innerType = unwrapToInner(field.type);
@@ -190,6 +217,13 @@ async function main() {
     }
 
     const typeName = innerType.name;
+
+    // 跳过系统类型
+    if (SKIP_SYSTEM_TYPES.includes(typeName)) {
+      console.log(`  ⏭️  Skipping system type: ${typeName}`);
+      continue;
+    }
+
     const fields = innerType.getFields();
     const scalarFieldNames = Object.keys(fields).filter(fname => {
       const fieldType = unwrap(fields[fname].type);
@@ -212,12 +246,23 @@ async function main() {
     console.log(`  ✅ Identified content type: ${typeName}`);
 
     const scalars: string[] = [];
-    const relations: Record<string, RelationConfig> = {};
+    const relations: Record<string, RelationConfig | RelationConfig[]> = {};
 
     for (const [fname, f] of Object.entries(fields)) {
       const unwrapped = unwrap(f.type);
       if (isScalarType(unwrapped)) scalars.push(fname);
-      else if (isObjectType(unwrapped)) relations[fname] = { type: unwrapped.name, fields: [] };
+      else if (isObjectType(unwrapped)) {
+        // 如果关系目标是系统类型，跳过（不记录）
+        if (SKIP_SYSTEM_TYPES.includes(unwrapped.name)) continue;
+        relations[fname] = { type: unwrapped.name, fields: [] };
+      } else if (isInterfaceType(unwrapped) || isUnionType(unwrapped)) {
+        const possibleTypes = schema.getPossibleTypes(unwrapped);
+        const componentTypes = possibleTypes.map(t => t.name).filter(name => !SKIP_SYSTEM_TYPES.includes(name));
+        if (componentTypes.length > 0) {
+          relations[fname] = componentTypes.map(compType => ({ type: compType, fields: [] }));
+          console.log(`    ⚡ Dynamic zone field: ${fname} -> possible types: ${componentTypes.join(', ')}`);
+        }
+      }
     }
 
     const actualFieldNames = new Set(Object.keys(fields));
@@ -228,16 +273,22 @@ async function main() {
     const rootReturnType = field.type.toString();
     const args = field.args.map(arg => arg.name);
 
+    // 判断是否为 Single Type
+    const isSingle = !rootReturnType.includes('EntityResponseCollection') && !fieldName.endsWith('s');
+
     if (!config[typeName]) {
-      config[typeName] = { rootField: fieldName, rootReturnType, args, scalars, relations };
-      console.log(`    → Set rootField to '${fieldName}' (first encounter)`);
+      config[typeName] = { rootField: fieldName, rootReturnType, args, scalars, relations, isSingle };
+      console.log(`    → Set rootField to '${fieldName}' (first encounter, isSingle=${isSingle})`);
     } else {
-      const existing = config[typeName].rootField;
-      if (shouldReplaceRootField(fieldName, existing)) {
+      const existing = config[typeName].rootField!;
+      if (!isSingle && shouldReplaceRootField(fieldName, existing)) {
         config[typeName].rootField = fieldName;
         config[typeName].rootReturnType = rootReturnType;
         config[typeName].args = args;
+        config[typeName].isSingle = false;
         console.log(`    → Updated rootField from '${existing}' to '${fieldName}' (higher priority)`);
+      } else if (isSingle && !config[typeName].isSingle) {
+        console.log(`    → Kept existing rootField '${existing}' (Collection over Single)`);
       } else {
         console.log(`    → Kept existing rootField '${existing}'`);
       }
@@ -246,15 +297,85 @@ async function main() {
 
   console.log('\n📋 Selected root fields per content type:');
   for (const [type, conf] of Object.entries(config)) {
-    console.log(`  - ${type}: ${conf.rootField} (args: ${conf.args.join(', ')})`);
+    console.log(`  - ${type}: ${conf.rootField} (args: ${conf.args?.join(', ')}, isSingle=${conf.isSingle})`);
   }
+
+  // ========== 2. 收集所有被引用的类型（包括组件） ==========
+  const referencedTypeNames = new Set<string>();
+  for (const contentTypeConfig of Object.values(config)) {
+    for (const rel of Object.values(contentTypeConfig.relations)) {
+      if (Array.isArray(rel)) {
+        for (const r of rel) {
+          referencedTypeNames.add(r.type);
+        }
+      } else {
+        referencedTypeNames.add(rel.type);
+      }
+    }
+  }
+
+  console.log(`\n📌 Referenced types from relations: ${Array.from(referencedTypeNames).join(', ')}`);
+
+  // ========== 3. 生成组件配置（仅处理以 Component 开头的类型） ==========
+  const allTypes = schema.getTypeMap();
+  const componentConfig: ConfigMap = {};
+
+  for (const typeName of referencedTypeNames) {
+    // 跳过已经是内容类型的
+    if (config[typeName]) continue;
+    // 跳过系统类型
+    if (SKIP_SYSTEM_TYPES.includes(typeName)) continue;
+    // 只处理名称以 'Component' 开头的类型（Strapi 组件命名约定）
+    if (!typeName.startsWith('Component')) continue;
+
+    const gqlType = allTypes[typeName];
+    if (!gqlType || !isObjectType(gqlType)) {
+      console.warn(`⚠️ Type ${typeName} not found or not an object type`);
+      continue;
+    }
+
+    const fields = gqlType.getFields();
+    if (Object.keys(fields).length === 0) continue;
+
+    console.log(`\n🧩 Detected component type: ${typeName}`);
+
+    // 提取所有标量字段（包括 documentId 等，不需要过滤）
+    const scalars: string[] = [];
+    const relations: Record<string, RelationConfig | RelationConfig[]> = {};
+
+    for (const [fname, f] of Object.entries(fields)) {
+      const unwrapped = unwrap(f.type);
+      if (isScalarType(unwrapped)) {
+        scalars.push(fname);
+      } else if (isObjectType(unwrapped)) {
+        if (SKIP_SYSTEM_TYPES.includes(unwrapped.name)) continue;
+        relations[fname] = { type: unwrapped.name, fields: [] };
+      } else if (isInterfaceType(unwrapped) || isUnionType(unwrapped)) {
+        const possibleTypes = schema.getPossibleTypes(unwrapped);
+        const componentTypes = possibleTypes.map(t => t.name).filter(name => !SKIP_SYSTEM_TYPES.includes(name));
+        if (componentTypes.length > 0) {
+          relations[fname] = componentTypes.map(compType => ({ type: compType, fields: [] }));
+        }
+      }
+    }
+
+    componentConfig[typeName] = {
+      scalars,
+      relations,
+      isComponent: true,
+    };
+  }
+
+  // 合并内容类型和组件配置
+  const finalConfig = { ...config, ...componentConfig };
+  console.log(`\n📊 Total types recorded: ${Object.keys(finalConfig).length} (${Object.keys(config).length} content types + ${Object.keys(componentConfig).length} components)`);
 
   const outDir = join(process.cwd(), 'src/generated');
   if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
 
   const configPath = join(outDir, 'field-config.json');
-  writeFileSync(configPath, JSON.stringify(config, null, 2));
-  console.log(`\n✅ field-config.json generated with ${Object.keys(config).length} content types`);
+  writeFileSync(configPath, JSON.stringify(finalConfig, null, 2));
+  console.log(`\n✅ field-config.json generated with ${Object.keys(finalConfig).length} entries`);
 }
 
 main().catch(err => {

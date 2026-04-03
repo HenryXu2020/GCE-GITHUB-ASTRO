@@ -1,0 +1,22 @@
+# .github/workflows/keep-supabase-awake-dev.yml
+# 将 <ENV> 替换为 dev 或 prod，以区分不同的工作流文件
+name: Keep Supabase Awake - DEV
+
+# 触发器：定时任务 + 手动触发
+on:
+  schedule:
+    # 每天 UTC 时间 0 点（北京时间上午 8 点）执行
+    - cron: '0 0 * * *'
+  # 允许你随时在 GitHub 网页上手动启动
+  workflow_dispatch:
+
+jobs:
+  ping-supabase:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send API request to wake up Supabase
+        # 使用 curl 命令发送一个简单的 GET 请求到 Supabase 的 Data API
+        run: |
+          curl -I -X GET "${{ secrets.SUPABASE_PROJECT_URL_DEV }}/rest/v1/" \
+          -H "apikey: ${{ secrets.SUPABASE_PUBLISHABLE_KEY_DEV }}" \
+          -H "Authorization: Bearer ${{ secrets.SUPABASE_PUBLISHABLE_KEY_DEV }}"

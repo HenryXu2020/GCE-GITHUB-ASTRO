@@ -1,20 +1,16 @@
 name: Handle Strapi Webhook
-
 on:
   repository_dispatch:
     types: [strapi_batch, strapi_trigger-test]
   workflow_dispatch:
-
 concurrency:
   group: astro-build
   cancel-in-progress: false
-
 env:
   NODE_VERSION: '22'
   PUBLIC_STRAPI_API_URL: ${{ secrets.STRAPI_API_URL }}
   PUBLIC_STRAPI_API_TOKEN: ${{ secrets.STRAPI_API_TOKEN }}
   CI_STRAPI_INTROSPECTION_TOKEN: ${{ secrets.CI_STRAPI_INTROSPECTION_TOKEN }}
-
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -22,43 +18,31 @@ jobs:
       contents: read
       pages: write
       id-token: write
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
-
       - name: Install dependencies
         run: npm ci
-
       - name: Ensure jq is available
         run: |
           if ! command -v jq &> /dev/null; then
             sudo apt-get update && sudo apt-get install -y jq
           fi
           jq --version
-
-      # -----------------------------------------------------------------
-      # 生成缓存 Key 组件（分支名 + Schema哈希 + 内容哈希）
-      # -----------------------------------------------------------------
       - name: Generate cache key components
         id: cache-key
         run: |
-          # 分支名标准化
           CACHE_BRANCH="${GITHUB_REF_NAME//\//-}"
           echo "CACHE_BRANCH=$CACHE_BRANCH" >> $GITHUB_ENV
-
-          # 计算远程 Schema 哈希（用于检测结构变化）
           SCHEMA_HASH=$(curl -s -f -X POST "${{ secrets.STRAPI_API_URL }}/graphql" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.STRAPI_API_TOKEN }}" \
             -d '{"query": "query IntrospectionQuery { __schema { types { name } } }"}' \
             2>/dev/null | jq -r '.data.__schema.types[].name' 2>/dev/null | sort | md5sum | cut -d' ' -f1 || echo "fetch_failed")
-          
           if [ "$SCHEMA_HASH" != "fetch_failed" ] && [ -n "$SCHEMA_HASH" ]; then
             echo "SCHEMA_HASH=$SCHEMA_HASH" >> $GITHUB_ENV
             echo "$SCHEMA_HASH" > src/generated/schema-hash.txt
@@ -66,26 +50,18 @@ jobs:
             echo "SCHEMA_HASH=fallback" >> $GITHUB_ENV
             echo "fallback" > src/generated/schema-hash.txt
           fi
-
-          # 计算内容哈希（基于现有缓存文件，若目录为空则使用 "empty"）
           if [ -d src/generated/cache ] && [ "$(ls -A src/generated/cache 2>/dev/null)" ]; then
             CONTENT_HASH=$(find src/generated/cache -name "*.json" -exec md5sum {} \; 2>/dev/null | sort | md5sum | cut -d' ' -f1 | cut -c1-8)
           else
             CONTENT_HASH="empty"
           fi
           echo "CONTENT_HASH=$CONTENT_HASH" >> $GITHUB_ENV
-
-          # 最终缓存 Key: OS-branch-schemaHash-contentHash
           FINAL_KEY="${{ runner.os }}-content-${CACHE_BRANCH}-${SCHEMA_HASH:0:12}-${CONTENT_HASH}"
           RESTORE_PREFIX="${{ runner.os }}-content-${CACHE_BRANCH}-${SCHEMA_HASH:0:12}-"
           echo "cache_key=$FINAL_KEY" >> $GITHUB_OUTPUT
           echo "cache_restore_prefix=$RESTORE_PREFIX" >> $GITHUB_OUTPUT
           echo "Cache key: $FINAL_KEY"
           echo "Restore prefix: $RESTORE_PREFIX"
-
-      # -----------------------------------------------------------------
-      # 缓存恢复（使用前缀匹配，获取最近版本的缓存）
-      # -----------------------------------------------------------------
       - name: Restore content cache
         uses: actions/cache/restore@v4
         id: cache-restore
@@ -98,10 +74,6 @@ jobs:
             ${{ steps.cache-key.outputs.cache_restore_prefix }}
             ${{ runner.os }}-content-${{ env.CACHE_BRANCH }}-
             ${{ runner.os }}-content-
-
-      # -----------------------------------------------------------------
-      # 缓存有效性校验与初始化
-      # -----------------------------------------------------------------
       - name: Validate cache and fallback
         run: |
           mkdir -p src/generated/cache
@@ -114,29 +86,25 @@ jobs:
               echo "FORCE_FULL_CACHE=true" >> $GITHUB_ENV
             fi
           fi
-
-      # -----------------------------------------------------------------
-      # 增量更新路径（仅 repository_dispatch 且缓存有效）
-      # -----------------------------------------------------------------
       - name: Process incremental updates
         if: github.event_name == 'repository_dispatch' && env.FORCE_FULL_CACHE != 'true'
         env:
           EVENTS: ${{ toJSON(github.event.client_payload.events) }}
         run: |
           set -euo pipefail
-
           echo "Processing incremental updates..."
-          echo "$EVENTS" | jq -c '.[]' | while read -r event; do
+          echo "$EVENTS" | jq -c '
+            group_by(.model + "-" + (.id|tostring))
+            | map(sort_by(.timestamp) | last)
+            | .[]
+          ' | while read -r event; do
             MODEL=$(echo "$event" | jq -r '.model')
             ID=$(echo "$event" | jq -r '.id')
             ACTION=$(echo "$event" | jq -r '.action')
-            
-            # 参数校验
             if ! [[ "$MODEL" =~ ^[a-z][a-z0-9-]*$ ]]; then
               echo "::error::Invalid model name: $MODEL"
               exit 1
             fi
-            # 兼容 Strapi v5 documentId (小写字母+数字+连字符)
             if ! [[ "$ID" =~ ^[a-z0-9-]+$ ]]; then
               echo "::error::Invalid entry ID: $ID"
               exit 1
@@ -145,7 +113,6 @@ jobs:
               echo "::error::Invalid action: $ACTION"
               exit 1
             fi
-
             LOCALE_COUNT=$(echo "$event" | jq -r '.locales | length // 0')
             if [ "$LOCALE_COUNT" -eq 0 ]; then
               echo "Updating $MODEL/$ID ($ACTION) with default locale"
@@ -165,18 +132,12 @@ jobs:
             fi
           done
           echo "Incremental updates completed."
-
-          # 更新 manifest 中的最后更新时间
           if [ -f src/generated/cache/MANIFEST.json ]; then
             jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               '.lastUpdated = $ts' \
               src/generated/cache/MANIFEST.json > /tmp/manifest.tmp && \
               mv /tmp/manifest.tmp src/generated/cache/MANIFEST.json
           fi
-
-      # -----------------------------------------------------------------
-      # 全量构建路径（非 repository_dispatch 或缓存无效时）
-      # -----------------------------------------------------------------
       - name: Full cache build (non-webhook or fallback)
         if: github.event_name != 'repository_dispatch' || env.FORCE_FULL_CACHE == 'true'
         run: |
@@ -187,10 +148,6 @@ jobs:
           npm run generate-config
           npm run build-cache
           echo '{"version":1}' > src/generated/cache/MANIFEST.json
-
-      # -----------------------------------------------------------------
-      # 生成 GraphQL 查询和 TypeScript 类型（智能合并）
-      # -----------------------------------------------------------------
       - name: Generate GraphQL queries and types
         run: |
           if [ "${{ github.event_name }}" = "repository_dispatch" ] && [ "${{ env.FORCE_FULL_CACHE }}" != "true" ]; then
@@ -209,7 +166,6 @@ jobs:
             npm run generate-correct-queries
             npm run codegen-dynamic
           fi
-
       - name: Verify codegen output
         run: |
           if [ ! -s src/generated/graphql-types.ts ]; then
@@ -220,13 +176,8 @@ jobs:
             echo "::warning::graphql-types.ts may lack expected exports (manual verification recommended)"
           fi
           echo "✅ Codegen output verified"
-
       - name: Generate i18n configuration
         run: npm run generate-config
-
-      # -----------------------------------------------------------------
-      # 构建 Astro 站点
-      # -----------------------------------------------------------------
       - name: Build Astro site
         run: |
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
@@ -236,7 +187,6 @@ jobs:
             echo "Running full build with cache regeneration..."
             npm run build
           fi
-
       - name: Verify build output
         run: |
           if [ ! -d dist ]; then
@@ -250,10 +200,6 @@ jobs:
           if find dist -name "*.js" -exec grep -l "undefined\|null is not an object" {} \; | grep -q .; then
             echo "::warning::Build output may contain runtime errors"
           fi
-
-      # -----------------------------------------------------------------
-      # 保存更新后的缓存（使用动态 key，内容变化时自动生成新 key）
-      # -----------------------------------------------------------------
       - name: Save content cache (post-build)
         if: success()
         uses: actions/cache/save@v4
@@ -263,11 +209,9 @@ jobs:
             src/generated/cache
             src/generated/schema-hash.txt
           key: ${{ steps.cache-key.outputs.cache_key }}
-
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist
-
       - name: Deploy to GitHub Pages
         uses: actions/deploy-pages@v4

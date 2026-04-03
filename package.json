@@ -11,7 +11,7 @@
     "clean-generated": "rm -f src/generated/all-queries.graphql src/generated/graphql-types.ts src/generated/config.ts src/generated/content-types.ts src/generated/content-cache.*",
     "predev": "npm run clean-generated && npm run build-dynamic && npm run generate-config && npm run build-cache",
     "dev": "astro dev --host",
-    "prebuild": "npm run clean-generated && npm run build-dynamic && npm run generate-config && npm run build-cache",
+    "prebuild": "npm run validate-footer-types && npm run clean-generated && npm run build-dynamic && npm run generate-config && npm run build-cache",
     "build": "astro build",
     "preview": "astro preview",
     "lint": "eslint .",
@@ -31,7 +31,8 @@
     "validate-generated": "if [ -f src/generated/all-queries.graphql ] && [ -f src/generated/graphql-types.ts ]; then echo '✅ Generated files exist'; else echo '❌ Generated files missing'; exit 1; fi",
     "build-cache": "tsx scripts/build-content-cache.ts",
     "update-cache": "tsx scripts/update-cache.ts",
-    "update-cache-entry": "tsx scripts/update-cache-entry.ts"
+    "update-cache-entry": "tsx scripts/update-cache-entry.ts",
+    "validate-footer-types": "tsx scripts/validate-footer-types.ts"
   },
   "dependencies": {
     "@astrojs/mdx": "^4.2.4",

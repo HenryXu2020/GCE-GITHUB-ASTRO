@@ -6,68 +6,75 @@ import type { ContentCache } from '@/generated/content-cache';
 
 const CACHE_DIR = path.join(process.cwd(), 'src/generated/cache');
 
-/**
- * 内存缓存结构：
- * - dataMap: 存储原始对象（以 documentId 为键）
- * - slugIndex: 按语言存储 slug 到 documentId 的映射（用于快速按 slug 查找）
- */
-interface CacheEntry<T = any> {
-  dataMap: Record<string, T>;
-  slugIndex: Map<string, string>; // slug -> documentId
+// 导出常量，用于 Single Type 缓存键
+export const SINGLE_TYPE_CACHE_KEY = 'single' as const;
+
+export interface CachedItem<T = any> {
+  data: T | null;
+  __meta: {
+    status: 'ok' | 'empty' | 'error';
+    fetchedAt: number;
+  };
 }
 
-// 内存缓存，避免重复读盘
+interface CacheEntry<T = any> {
+  dataMap: Record<string, T | CachedItem<T>>;
+  slugIndex: Map<string, string>;
+  mtime: number;
+}
+
 const memoryCache: Partial<Record<string, CacheEntry>> = {};
 
-/**
- * 加载指定类型和语言的数据，并构建索引
- */
 function loadTypeLocale<K extends keyof ContentCache>(type: K, locale: Locale): CacheEntry<ContentCache[K][string]> {
   const cacheKey = `${String(type)}-${locale}`;
-  if (memoryCache[cacheKey]) {
-    return memoryCache[cacheKey]!;
-  }
-
   const filePath = path.join(CACHE_DIR, String(type), `${locale}.json`);
+
   if (!fs.existsSync(filePath)) {
     console.warn(`[cache] Cache file not found: ${filePath}, returning empty map.`);
-    const empty: CacheEntry = { dataMap: {}, slugIndex: new Map() };
+    const empty: CacheEntry = { dataMap: {}, slugIndex: new Map(), mtime: 0 };
     memoryCache[cacheKey] = empty;
     return empty;
   }
 
-  const raw = fs.readFileSync(filePath, 'utf-8');
-  // 缓存文件为对象格式（以 documentId 为键）
-  const dataMap = JSON.parse(raw) as Record<string, ContentCache[K][string]>;
+  const stats = fs.statSync(filePath);
+  const currentMtime = stats.mtimeMs;
 
-  // 构建 slug 索引（仅当条目包含 slug 字段时）
+  if (memoryCache[cacheKey] && memoryCache[cacheKey]!.mtime === currentMtime) {
+    return memoryCache[cacheKey]!;
+  }
+
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  const dataMap = JSON.parse(raw) as Record<string, any>;
+
   const slugIndex = new Map<string, string>();
   for (const [docId, item] of Object.entries(dataMap)) {
-    const slug = (item as any).slug;
+    const actualItem = (item as CachedItem).data ?? item;
+    const slug = actualItem?.slug;
     if (slug && typeof slug === 'string') {
       slugIndex.set(slug, docId);
     }
   }
 
-  const entry: CacheEntry = { dataMap, slugIndex };
+  const entry: CacheEntry = { dataMap, slugIndex, mtime: currentMtime };
   memoryCache[cacheKey] = entry;
   return entry;
 }
 
-/**
- * 获取指定类型和语言的内容列表（数组形式，保持原有接口）
- */
 export function getContentList<T = unknown, K extends keyof ContentCache = keyof ContentCache>(
   contentType: K,
   locale: Locale
 ): T[] {
   const entry = loadTypeLocale(contentType, locale);
-  return Object.values(entry.dataMap) as T[];
+  const items: T[] = [];
+  for (const value of Object.values(entry.dataMap)) {
+    const actual = (value as CachedItem).data ?? value;
+    if (actual !== null && actual !== undefined) {
+      items.push(actual as T);
+    }
+  }
+  return items;
 }
 
-/**
- * 根据 slug 获取单个内容（O(1) 查找）
- */
 export function getContentBySlug<T extends { slug?: string }, K extends keyof ContentCache = keyof ContentCache>(
   contentType: K,
   slug: string,
@@ -76,28 +83,29 @@ export function getContentBySlug<T extends { slug?: string }, K extends keyof Co
   const entry = loadTypeLocale(contentType, locale);
   const docId = entry.slugIndex.get(slug);
   if (!docId) {
-    // 降级遍历（以防索引未命中或 slug 不存在）
-    const found = Object.values(entry.dataMap).find(item => (item as any).slug === slug);
-    return (found as T) || null;
+    for (const value of Object.values(entry.dataMap)) {
+      const actual = (value as CachedItem).data ?? value;
+      if (actual?.slug === slug) return actual as T;
+    }
+    return null;
   }
-  return entry.dataMap[docId] as T;
+  const value = entry.dataMap[docId];
+  const actual = (value as CachedItem).data ?? value;
+  return (actual as T) || null;
 }
 
-/**
- * 根据 documentId 直接获取内容（新增方法，方便增量更新使用）
- */
 export function getContentById<T = unknown, K extends keyof ContentCache = keyof ContentCache>(
   contentType: K,
   documentId: string,
   locale: Locale
 ): T | null {
   const entry = loadTypeLocale(contentType, locale);
-  return entry.dataMap[documentId] as T || null;
+  const value = entry.dataMap[documentId];
+  if (!value) return null;
+  const actual = (value as CachedItem).data ?? value;
+  return actual as T;
 }
 
-/**
- * 获取指定类型的所有语言内容（保持原有接口，返回 Record<Locale, T[]>）
- */
 export function getAllContent<T = unknown, K extends keyof ContentCache = keyof ContentCache>(
   contentType: K
 ): Record<Locale, T[]> {
@@ -116,12 +124,41 @@ export function getAllContent<T = unknown, K extends keyof ContentCache = keyof 
     const filePath = path.join(typeDir, file);
     try {
       const raw = fs.readFileSync(filePath, 'utf-8');
-      const dataMap = JSON.parse(raw) as Record<string, T>;
-      result[locale] = Object.values(dataMap);
+      const dataMap = JSON.parse(raw) as Record<string, any>;
+      const items: T[] = [];
+      for (const value of Object.values(dataMap)) {
+        const actual = (value as CachedItem).data ?? value;
+        if (actual !== null && actual !== undefined) items.push(actual as T);
+      }
+      result[locale] = items;
     } catch (err) {
       console.warn(`[cache] Failed to read ${filePath}:`, err);
     }
   }
 
   return result as Record<Locale, T[]>;
+}
+
+export function getSingleContent<T = unknown, K extends keyof ContentCache = keyof ContentCache>(
+  contentType: K,
+  locale: Locale
+): CachedItem<T> | null {
+  const filePath = path.join(CACHE_DIR, String(contentType), `${locale}.json`);
+  if (!fs.existsSync(filePath)) {
+    console.warn(`[cache] Single type cache file not found: ${filePath}`);
+    return null;
+  }
+
+  const entry = loadTypeLocale(contentType, locale);
+  const cached = entry.dataMap[SINGLE_TYPE_CACHE_KEY] as CachedItem<T> | undefined;
+  if (!cached) {
+    // 兼容旧格式
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const dataMap = JSON.parse(raw) as Record<string, any>;
+    if (dataMap[SINGLE_TYPE_CACHE_KEY] === undefined) {
+      return { data: dataMap as T, __meta: { status: 'ok', fetchedAt: Date.now() } };
+    }
+    return null;
+  }
+  return cached;
 }

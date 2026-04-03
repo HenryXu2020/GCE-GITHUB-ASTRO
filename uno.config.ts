@@ -16,6 +16,7 @@ export default defineConfig({
       'text-main': 'text-hex-555555 dark:text-hex-bbbbbb',
       'text-link': 'text-dark dark:text-white ',
       'border-main': 'border-truegray-300 dark:border-truegray-600',
+      'op-70': 'opacity-70',  // 新增
     },
     {
       'text-title': 'text-link text-4xl font-800',

@@ -3,8 +3,10 @@
  *
  * 改进版本：
  * - 按语言拆分缓存文件
- * - 将存储结构从数组改为对象（以 documentId 为键）
+ * - 将存储结构改为对象（以 documentId 为键）
  * - 生成类型定义文件 content-cache.d.ts，反映新结构
+ * - 包装元数据（__meta），区分数据状态
+ * - 使用 SINGLE_TYPE_CACHE_KEY 常量
  */
 
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'fs';
@@ -24,6 +26,9 @@ const STRAPI_TOKEN = process.env.PUBLIC_STRAPI_API_TOKEN;
 if (!STRAPI_URL) {
   throw new Error('PUBLIC_STRAPI_API_URL not set');
 }
+
+// 定义 Single Type 缓存键常量
+const SINGLE_TYPE_CACHE_KEY = 'single';
 
 // 读取 field-config.json
 const fieldConfigPath = join(__dirname, '../src/generated/field-config.json');
@@ -54,6 +59,12 @@ function discoverListOperations(sdk: any): string[] {
   });
 }
 
+function discoverSingleOperations(sdk: any): string[] {
+  return Object.keys(sdk).filter(
+    (key) => key.startsWith('Get') && !key.endsWith('List') && typeof sdk[key] === 'function'
+  );
+}
+
 function extractContentType(operationName: string): string {
   return operationName.replace(/^Get/, '').replace(/List$/, '');
 }
@@ -62,7 +73,7 @@ function findMatchingTypeKey(candidate: string): string | null {
   if (fieldConfig[candidate]) return candidate;
   const lowerCandidate = candidate.toLowerCase();
   const matchedKey = Object.keys(fieldConfig).find(
-    key => key.toLowerCase() === lowerCandidate
+    (key) => key.toLowerCase() === lowerCandidate
   );
   if (matchedKey) {
     console.warn(
@@ -206,18 +217,39 @@ async function fetchAllPages(
   return allItems;
 }
 
-/**
- * 生成内容缓存类型定义文件（适配对象结构）
- */
-async function generateTypeDefinition(cache: Record<string, any>) {
+async function fetchSingleType(
+  sdk: any,
+  operation: string,
+  contentType: string,
+  locale?: string
+) {
+  const config = fieldConfig[contentType];
+  if (!config) throw new Error(`配置缺失: ${contentType}`);
+
+  const variables: any = {};
+  if (locale && config.args?.includes('locale')) variables.locale = locale;
+
+  try {
+    const result = await sdk[operation](variables);
+    const key = config.rootField;
+    return result[key];
+  } catch (err: any) {
+    if (isForbiddenError(err)) {
+      console.warn(`⚠️ 跳过 ${operation} (${locale}) 权限不足。`);
+      return null;
+    }
+    throw err;
+  }
+}
+
+async function generateTypeDefinition(cacheTypes: string[]) {
   const typeLines: string[] = [];
 
   typeLines.push('// Auto-generated. DO NOT EDIT.\n');
   typeLines.push(`import type * as Types from './graphql-types';\n`);
   typeLines.push(`export interface ContentCache {`);
 
-  for (const contentType of Object.keys(cache)) {
-    // 确保类型名称首字母大写（与 graphql-types 导出一致）
+  for (const contentType of cacheTypes) {
     const typeName = contentType.charAt(0).toUpperCase() + contentType.slice(1);
     typeLines.push(`  ${contentType}: Record<string, Types.${typeName}>;`);
   }
@@ -230,77 +262,115 @@ async function generateTypeDefinition(cache: Record<string, any>) {
 }
 
 async function buildCache() {
-  console.log('🚀 开始构建内容缓存（对象存储）...');
+  console.log('🚀 开始构建内容缓存（对象存储 + 元数据包装）...');
 
   const client = createClient();
   const sdk = getSdk(client);
 
-  const operations = discoverListOperations(sdk);
-  console.log(`🔍 发现 ${operations.length} 个列表操作:`, operations);
+  const listOperations = discoverListOperations(sdk);
+  console.log(`🔍 发现 ${listOperations.length} 个列表操作:`, listOperations);
+  const singleOperations = discoverSingleOperations(sdk);
+  console.log(`🔍 发现 ${singleOperations.length} 个单例操作:`, singleOperations);
 
   const cache: Record<string, any> = {};
+  const processedTypes = new Set<string>();
 
-  for (const op of operations) {
+  // 处理 Collection Types
+  for (const op of listOperations) {
     const rawType = extractContentType(op);
     const contentType = findMatchingTypeKey(rawType);
+    if (!contentType || SKIP_TYPES.includes(contentType)) continue;
+    const config = fieldConfig[contentType];
+    if (config.isSingle) continue;
 
-    if (!contentType) {
-      console.warn(`⚠️ 跳过 ${op}: 在 field-config.json 中未找到匹配的类型 "${rawType}"`);
-      continue;
-    }
-
-    if (SKIP_TYPES.includes(contentType)) {
-      console.log(`⏭️ 跳过系统类型 ${contentType} (操作 ${op})`);
-      continue;
-    }
-
-    console.log(`\n📦 处理操作: ${op} -> 内容类型: "${contentType}"`);
-
+    console.log(`\n📦 处理 Collection Type: ${contentType} (操作 ${op})`);
     const localeResults: Record<string, any[]> = {};
-
     for (const locale of locales) {
       console.log(`   获取 ${contentType} (${locale})`);
       const items = await fetchAllPages(sdk, op, contentType, locale);
       localeResults[locale] = items;
       console.log(`   ${locale}: ${items.length} 项`);
     }
-
     const hasAnyData = Object.values(localeResults).some(items => items.length > 0);
-    const cacheKey = contentType.toLowerCase(); // 缓存键统一小写，便于前端使用
-
+    const cacheKey = contentType.toLowerCase();
     if (hasAnyData) {
       cache[cacheKey] = localeResults;
       console.log(`✅ ${contentType} 已缓存为 "${cacheKey}"`);
-    } else {
-      console.warn(`⚠️ 完全跳过 ${contentType}（所有语言均无数据或无权限）`);
     }
+    processedTypes.add(contentType);
   }
 
-  // 确保输出目录存在
+  // 处理 Single Types
+  for (const op of singleOperations) {
+    const rawType = extractContentType(op);
+    const contentType = findMatchingTypeKey(rawType);
+    if (!contentType || SKIP_TYPES.includes(contentType)) continue;
+    const config = fieldConfig[contentType];
+    if (!config.isSingle) continue;
+
+    console.log(`\n📦 处理 Single Type: ${contentType} (操作 ${op})`);
+    const localeResults: Record<string, any> = {};
+    for (const locale of locales) {
+      console.log(`   获取 ${contentType} (${locale})`);
+      const data = await fetchSingleType(sdk, op, contentType, locale);
+      localeResults[locale] = data;
+      if (data) {
+        console.log(`   ${locale}: 数据已获取`);
+      } else {
+        console.log(`   ${locale}: 无数据或权限不足，将写入 null`);
+      }
+    }
+    const cacheKey = contentType.toLowerCase();
+    cache[cacheKey] = localeResults;
+    console.log(`✅ ${contentType} (Single) 已缓存为 "${cacheKey}"`);
+    processedTypes.add(contentType);
+  }
+
   const outputDir = join(__dirname, '../src/generated');
   const cacheDir = join(outputDir, 'cache');
   if (!existsSync(cacheDir)) {
     mkdirSync(cacheDir, { recursive: true });
   }
 
-  // 生成类型定义文件（基于新结构）
-  await generateTypeDefinition(cache);
+  await generateTypeDefinition(Array.from(processedTypes));
 
-  // 按类型和语言写入独立文件，格式为对象（以 documentId 为键）
   for (const [type, localeResults] of Object.entries(cache)) {
     const typeDir = join(cacheDir, type);
     if (!existsSync(typeDir)) {
       mkdirSync(typeDir, { recursive: true });
     }
 
-    for (const [locale, items] of Object.entries(localeResults as Record<string, any[]>)) {
-      // 将数组转换为以 documentId 为键的对象
-      const obj = Object.fromEntries(
-        items.map(item => [item.documentId, item])
-      );
+    for (const [locale, items] of Object.entries(localeResults as Record<string, any>)) {
+      const obj: Record<string, any> = {};
+      const isSingle = fieldConfig[Object.keys(fieldConfig).find(k => k.toLowerCase() === type)]?.isSingle;
+
+      if (isSingle) {
+        obj[SINGLE_TYPE_CACHE_KEY] = {
+          data: items,
+          __meta: {
+            status: items ? 'ok' : 'empty',
+            fetchedAt: Date.now(),
+          },
+        };
+      } else {
+        const itemsArray = Array.isArray(items) ? items : [];
+        for (const item of itemsArray) {
+          if (item?.documentId) {
+            obj[item.documentId] = {
+              data: item,
+              __meta: {
+                status: 'ok',
+                fetchedAt: Date.now(),
+              },
+            };
+          }
+        }
+      }
+
       const filePath = join(typeDir, `${locale}.json`);
       writeFileSync(filePath, JSON.stringify(obj, null, 2));
-      console.log(`✅ ${type}/${locale}.json 已生成 (${items.length} 项)`);
+      const itemCount = isSingle ? (items ? 1 : 0) : (Array.isArray(items) ? items.length : 0);
+      console.log(`✅ ${type}/${locale}.json 已生成 (${itemCount} 项，包装元数据)`);
     }
   }
 }

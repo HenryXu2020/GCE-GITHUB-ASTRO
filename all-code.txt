@@ -20,22 +20,18 @@ WEBHOOK_REQUEST_TIMEOUT_MS=30000 # 30秒（默认）
 
 ## 文件：.github/workflows/webhook-trigger.yml
 name: Handle Strapi Webhook
-
 on:
   repository_dispatch:
     types: [strapi_batch, strapi_trigger-test]
   workflow_dispatch:
-
 concurrency:
   group: astro-build
   cancel-in-progress: false
-
 env:
   NODE_VERSION: '22'
   PUBLIC_STRAPI_API_URL: ${{ secrets.STRAPI_API_URL }}
   PUBLIC_STRAPI_API_TOKEN: ${{ secrets.STRAPI_API_TOKEN }}
   CI_STRAPI_INTROSPECTION_TOKEN: ${{ secrets.CI_STRAPI_INTROSPECTION_TOKEN }}
-
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -43,43 +39,31 @@ jobs:
       contents: read
       pages: write
       id-token: write
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
-
       - name: Install dependencies
         run: npm ci
-
       - name: Ensure jq is available
         run: |
           if ! command -v jq &> /dev/null; then
             sudo apt-get update && sudo apt-get install -y jq
           fi
           jq --version
-
-      # -----------------------------------------------------------------
-      # 生成缓存 Key 组件（分支名 + Schema哈希 + 内容哈希）
-      # -----------------------------------------------------------------
       - name: Generate cache key components
         id: cache-key
         run: |
-          # 分支名标准化
           CACHE_BRANCH="${GITHUB_REF_NAME//\//-}"
           echo "CACHE_BRANCH=$CACHE_BRANCH" >> $GITHUB_ENV
-
-          # 计算远程 Schema 哈希（用于检测结构变化）
           SCHEMA_HASH=$(curl -s -f -X POST "${{ secrets.STRAPI_API_URL }}/graphql" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.STRAPI_API_TOKEN }}" \
             -d '{"query": "query IntrospectionQuery { __schema { types { name } } }"}' \
             2>/dev/null | jq -r '.data.__schema.types[].name' 2>/dev/null | sort | md5sum | cut -d' ' -f1 || echo "fetch_failed")
-          
           if [ "$SCHEMA_HASH" != "fetch_failed" ] && [ -n "$SCHEMA_HASH" ]; then
             echo "SCHEMA_HASH=$SCHEMA_HASH" >> $GITHUB_ENV
             echo "$SCHEMA_HASH" > src/generated/schema-hash.txt
@@ -87,26 +71,18 @@ jobs:
             echo "SCHEMA_HASH=fallback" >> $GITHUB_ENV
             echo "fallback" > src/generated/schema-hash.txt
           fi
-
-          # 计算内容哈希（基于现有缓存文件，若目录为空则使用 "empty"）
           if [ -d src/generated/cache ] && [ "$(ls -A src/generated/cache 2>/dev/null)" ]; then
             CONTENT_HASH=$(find src/generated/cache -name "*.json" -exec md5sum {} \; 2>/dev/null | sort | md5sum | cut -d' ' -f1 | cut -c1-8)
           else
             CONTENT_HASH="empty"
           fi
           echo "CONTENT_HASH=$CONTENT_HASH" >> $GITHUB_ENV
-
-          # 最终缓存 Key: OS-branch-schemaHash-contentHash
           FINAL_KEY="${{ runner.os }}-content-${CACHE_BRANCH}-${SCHEMA_HASH:0:12}-${CONTENT_HASH}"
           RESTORE_PREFIX="${{ runner.os }}-content-${CACHE_BRANCH}-${SCHEMA_HASH:0:12}-"
           echo "cache_key=$FINAL_KEY" >> $GITHUB_OUTPUT
           echo "cache_restore_prefix=$RESTORE_PREFIX" >> $GITHUB_OUTPUT
           echo "Cache key: $FINAL_KEY"
           echo "Restore prefix: $RESTORE_PREFIX"
-
-      # -----------------------------------------------------------------
-      # 缓存恢复（使用前缀匹配，获取最近版本的缓存）
-      # -----------------------------------------------------------------
       - name: Restore content cache
         uses: actions/cache/restore@v4
         id: cache-restore
@@ -119,10 +95,6 @@ jobs:
             ${{ steps.cache-key.outputs.cache_restore_prefix }}
             ${{ runner.os }}-content-${{ env.CACHE_BRANCH }}-
             ${{ runner.os }}-content-
-
-      # -----------------------------------------------------------------
-      # 缓存有效性校验与初始化
-      # -----------------------------------------------------------------
       - name: Validate cache and fallback
         run: |
           mkdir -p src/generated/cache
@@ -135,29 +107,25 @@ jobs:
               echo "FORCE_FULL_CACHE=true" >> $GITHUB_ENV
             fi
           fi
-
-      # -----------------------------------------------------------------
-      # 增量更新路径（仅 repository_dispatch 且缓存有效）
-      # -----------------------------------------------------------------
       - name: Process incremental updates
         if: github.event_name == 'repository_dispatch' && env.FORCE_FULL_CACHE != 'true'
         env:
           EVENTS: ${{ toJSON(github.event.client_payload.events) }}
         run: |
           set -euo pipefail
-
           echo "Processing incremental updates..."
-          echo "$EVENTS" | jq -c '.[]' | while read -r event; do
+          echo "$EVENTS" | jq -c '
+            group_by(.model + "-" + (.id|tostring))
+            | map(sort_by(.timestamp) | last)
+            | .[]
+          ' | while read -r event; do
             MODEL=$(echo "$event" | jq -r '.model')
             ID=$(echo "$event" | jq -r '.id')
             ACTION=$(echo "$event" | jq -r '.action')
-            
-            # 参数校验
             if ! [[ "$MODEL" =~ ^[a-z][a-z0-9-]*$ ]]; then
               echo "::error::Invalid model name: $MODEL"
               exit 1
             fi
-            # 兼容 Strapi v5 documentId (小写字母+数字+连字符)
             if ! [[ "$ID" =~ ^[a-z0-9-]+$ ]]; then
               echo "::error::Invalid entry ID: $ID"
               exit 1
@@ -166,7 +134,6 @@ jobs:
               echo "::error::Invalid action: $ACTION"
               exit 1
             fi
-
             LOCALE_COUNT=$(echo "$event" | jq -r '.locales | length // 0')
             if [ "$LOCALE_COUNT" -eq 0 ]; then
               echo "Updating $MODEL/$ID ($ACTION) with default locale"
@@ -186,18 +153,12 @@ jobs:
             fi
           done
           echo "Incremental updates completed."
-
-          # 更新 manifest 中的最后更新时间
           if [ -f src/generated/cache/MANIFEST.json ]; then
             jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               '.lastUpdated = $ts' \
               src/generated/cache/MANIFEST.json > /tmp/manifest.tmp && \
               mv /tmp/manifest.tmp src/generated/cache/MANIFEST.json
           fi
-
-      # -----------------------------------------------------------------
-      # 全量构建路径（非 repository_dispatch 或缓存无效时）
-      # -----------------------------------------------------------------
       - name: Full cache build (non-webhook or fallback)
         if: github.event_name != 'repository_dispatch' || env.FORCE_FULL_CACHE == 'true'
         run: |
@@ -208,10 +169,6 @@ jobs:
           npm run generate-config
           npm run build-cache
           echo '{"version":1}' > src/generated/cache/MANIFEST.json
-
-      # -----------------------------------------------------------------
-      # 生成 GraphQL 查询和 TypeScript 类型（智能合并）
-      # -----------------------------------------------------------------
       - name: Generate GraphQL queries and types
         run: |
           if [ "${{ github.event_name }}" = "repository_dispatch" ] && [ "${{ env.FORCE_FULL_CACHE }}" != "true" ]; then
@@ -230,7 +187,6 @@ jobs:
             npm run generate-correct-queries
             npm run codegen-dynamic
           fi
-
       - name: Verify codegen output
         run: |
           if [ ! -s src/generated/graphql-types.ts ]; then
@@ -241,13 +197,8 @@ jobs:
             echo "::warning::graphql-types.ts may lack expected exports (manual verification recommended)"
           fi
           echo "✅ Codegen output verified"
-
       - name: Generate i18n configuration
         run: npm run generate-config
-
-      # -----------------------------------------------------------------
-      # 构建 Astro 站点
-      # -----------------------------------------------------------------
       - name: Build Astro site
         run: |
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
@@ -257,7 +208,6 @@ jobs:
             echo "Running full build with cache regeneration..."
             npm run build
           fi
-
       - name: Verify build output
         run: |
           if [ ! -d dist ]; then
@@ -271,10 +221,6 @@ jobs:
           if find dist -name "*.js" -exec grep -l "undefined\|null is not an object" {} \; | grep -q .; then
             echo "::warning::Build output may contain runtime errors"
           fi
-
-      # -----------------------------------------------------------------
-      # 保存更新后的缓存（使用动态 key，内容变化时自动生成新 key）
-      # -----------------------------------------------------------------
       - name: Save content cache (post-build)
         if: success()
         uses: actions/cache/save@v4
@@ -284,12 +230,10 @@ jobs:
             src/generated/cache
             src/generated/schema-hash.txt
           key: ${{ steps.cache-key.outputs.cache_key }}
-
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist
-
       - name: Deploy to GitHub Pages
         uses: actions/deploy-pages@v4
 
@@ -629,7 +573,7 @@ export default {
     "clean-generated": "rm -f src/generated/all-queries.graphql src/generated/graphql-types.ts src/generated/config.ts src/generated/content-types.ts src/generated/content-cache.*",
     "predev": "npm run clean-generated && npm run build-dynamic && npm run generate-config && npm run build-cache",
     "dev": "astro dev --host",
-    "prebuild": "npm run clean-generated && npm run build-dynamic && npm run generate-config && npm run build-cache",
+    "prebuild": "npm run validate-footer-types && npm run clean-generated && npm run build-dynamic && npm run generate-config && npm run build-cache",
     "build": "astro build",
     "preview": "astro preview",
     "lint": "eslint .",
@@ -649,7 +593,8 @@ export default {
     "validate-generated": "if [ -f src/generated/all-queries.graphql ] && [ -f src/generated/graphql-types.ts ]; then echo '✅ Generated files exist'; else echo '❌ Generated files missing'; exit 1; fi",
     "build-cache": "tsx scripts/build-content-cache.ts",
     "update-cache": "tsx scripts/update-cache.ts",
-    "update-cache-entry": "tsx scripts/update-cache-entry.ts"
+    "update-cache-entry": "tsx scripts/update-cache-entry.ts",
+    "validate-footer-types": "tsx scripts/validate-footer-types.ts"
   },
   "dependencies": {
     "@astrojs/mdx": "^4.2.4",
@@ -758,11 +703,10 @@ pm2 save
 /**
  * Strapi v5 schema analyzer with root field metadata
  * - Records root field return type and accepted arguments
- * - Prefers plural list fields
- * - Only adds system fields that actually exist in the type
- * - Caches introspection result to avoid repeated network requests
- * - Enhanced error handling: timeout, retry, detailed logging
- * - Added CI token and CSRF header for production introspection
+ * - Prefers plural list fields for collections
+ * - Adds system fields that actually exist in the type
+ * - Identifies Single Types (isSingle flag)
+ * - **识别以 Component 开头的类型作为组件，包含其所有标量字段**
  */
 
 import {
@@ -775,6 +719,8 @@ import {
   isListType,
   GraphQLType,
   IntrospectionQuery,
+  isInterfaceType,
+  isUnionType,
 } from 'graphql';
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
@@ -792,10 +738,33 @@ if (!STRAPI_URL) throw new Error('PUBLIC_STRAPI_API_URL not set');
 
 const CACHE_DIR = join(__dirname, '../src/generated');
 const SCHEMA_CACHE_PATH = join(CACHE_DIR, 'schema-introspection.json');
-
 const FORCE_REFRESH = process.env.FORCE_REFRESH_SCHEMA === 'true';
 
 const SYSTEM_FIELDS = ['id', 'documentId', 'createdAt', 'updatedAt', 'publishedAt'];
+
+// 需要跳过的系统类型（不记录为内容类型或组件）
+const SKIP_SYSTEM_TYPES = [
+  'UploadFile',
+  'I18NLocale',
+  'ReviewWorkflowsWorkflow',
+  'ReviewWorkflowsWorkflowStage',
+  'UsersPermissionsRole',
+  'UsersPermissionsUser',
+  'UsersPermissionsMe',
+  'UsersPermissionsPermission',
+  'Query',
+  'Mutation',
+  'Boolean',
+  'String',
+  'Int',
+  'Float',
+  'ID',
+  'DateTime',
+  'JSON',
+  'Upload',
+  'PaginationArg',
+  'Pagination',
+];
 
 type RelationConfig = {
   type: string;
@@ -803,11 +772,13 @@ type RelationConfig = {
 };
 
 type ContentTypeConfig = {
-  rootField: string;
-  rootReturnType: string;
-  args: string[];
+  rootField?: string;
+  rootReturnType?: string;
+  args?: string[];
   scalars: string[];
-  relations: Record<string, RelationConfig>;
+  relations: Record<string, RelationConfig | RelationConfig[]>;
+  isSingle?: boolean;
+  isComponent?: boolean;
 };
 
 type ConfigMap = Record<string, ContentTypeConfig>;
@@ -922,7 +893,7 @@ async function getIntrospectionData(): Promise<IntrospectionQuery> {
 }
 
 async function main() {
-  console.log('🚀 Starting schema analysis (with root field metadata)...');
+  console.log('🚀 Starting schema analysis (with root field metadata & component detection)...');
   const introspection = await getIntrospectionData();
   const schema = buildClientSchema(introspection);
 
@@ -937,6 +908,7 @@ async function main() {
 
   const config: ConfigMap = {};
 
+  // ========== 1. 分析根查询字段，识别内容类型 ==========
   for (const [fieldName, field] of Object.entries(queryFields)) {
     console.log(`\n📦 Inspecting root field: ${fieldName}`);
     const innerType = unwrapToInner(field.type);
@@ -946,6 +918,13 @@ async function main() {
     }
 
     const typeName = innerType.name;
+
+    // 跳过系统类型
+    if (SKIP_SYSTEM_TYPES.includes(typeName)) {
+      console.log(`  ⏭️  Skipping system type: ${typeName}`);
+      continue;
+    }
+
     const fields = innerType.getFields();
     const scalarFieldNames = Object.keys(fields).filter(fname => {
       const fieldType = unwrap(fields[fname].type);
@@ -968,12 +947,23 @@ async function main() {
     console.log(`  ✅ Identified content type: ${typeName}`);
 
     const scalars: string[] = [];
-    const relations: Record<string, RelationConfig> = {};
+    const relations: Record<string, RelationConfig | RelationConfig[]> = {};
 
     for (const [fname, f] of Object.entries(fields)) {
       const unwrapped = unwrap(f.type);
       if (isScalarType(unwrapped)) scalars.push(fname);
-      else if (isObjectType(unwrapped)) relations[fname] = { type: unwrapped.name, fields: [] };
+      else if (isObjectType(unwrapped)) {
+        // 如果关系目标是系统类型，跳过（不记录）
+        if (SKIP_SYSTEM_TYPES.includes(unwrapped.name)) continue;
+        relations[fname] = { type: unwrapped.name, fields: [] };
+      } else if (isInterfaceType(unwrapped) || isUnionType(unwrapped)) {
+        const possibleTypes = schema.getPossibleTypes(unwrapped);
+        const componentTypes = possibleTypes.map(t => t.name).filter(name => !SKIP_SYSTEM_TYPES.includes(name));
+        if (componentTypes.length > 0) {
+          relations[fname] = componentTypes.map(compType => ({ type: compType, fields: [] }));
+          console.log(`    ⚡ Dynamic zone field: ${fname} -> possible types: ${componentTypes.join(', ')}`);
+        }
+      }
     }
 
     const actualFieldNames = new Set(Object.keys(fields));
@@ -984,16 +974,22 @@ async function main() {
     const rootReturnType = field.type.toString();
     const args = field.args.map(arg => arg.name);
 
+    // 判断是否为 Single Type
+    const isSingle = !rootReturnType.includes('EntityResponseCollection') && !fieldName.endsWith('s');
+
     if (!config[typeName]) {
-      config[typeName] = { rootField: fieldName, rootReturnType, args, scalars, relations };
-      console.log(`    → Set rootField to '${fieldName}' (first encounter)`);
+      config[typeName] = { rootField: fieldName, rootReturnType, args, scalars, relations, isSingle };
+      console.log(`    → Set rootField to '${fieldName}' (first encounter, isSingle=${isSingle})`);
     } else {
-      const existing = config[typeName].rootField;
-      if (shouldReplaceRootField(fieldName, existing)) {
+      const existing = config[typeName].rootField!;
+      if (!isSingle && shouldReplaceRootField(fieldName, existing)) {
         config[typeName].rootField = fieldName;
         config[typeName].rootReturnType = rootReturnType;
         config[typeName].args = args;
+        config[typeName].isSingle = false;
         console.log(`    → Updated rootField from '${existing}' to '${fieldName}' (higher priority)`);
+      } else if (isSingle && !config[typeName].isSingle) {
+        console.log(`    → Kept existing rootField '${existing}' (Collection over Single)`);
       } else {
         console.log(`    → Kept existing rootField '${existing}'`);
       }
@@ -1002,15 +998,85 @@ async function main() {
 
   console.log('\n📋 Selected root fields per content type:');
   for (const [type, conf] of Object.entries(config)) {
-    console.log(`  - ${type}: ${conf.rootField} (args: ${conf.args.join(', ')})`);
+    console.log(`  - ${type}: ${conf.rootField} (args: ${conf.args?.join(', ')}, isSingle=${conf.isSingle})`);
   }
+
+  // ========== 2. 收集所有被引用的类型（包括组件） ==========
+  const referencedTypeNames = new Set<string>();
+  for (const contentTypeConfig of Object.values(config)) {
+    for (const rel of Object.values(contentTypeConfig.relations)) {
+      if (Array.isArray(rel)) {
+        for (const r of rel) {
+          referencedTypeNames.add(r.type);
+        }
+      } else {
+        referencedTypeNames.add(rel.type);
+      }
+    }
+  }
+
+  console.log(`\n📌 Referenced types from relations: ${Array.from(referencedTypeNames).join(', ')}`);
+
+  // ========== 3. 生成组件配置（仅处理以 Component 开头的类型） ==========
+  const allTypes = schema.getTypeMap();
+  const componentConfig: ConfigMap = {};
+
+  for (const typeName of referencedTypeNames) {
+    // 跳过已经是内容类型的
+    if (config[typeName]) continue;
+    // 跳过系统类型
+    if (SKIP_SYSTEM_TYPES.includes(typeName)) continue;
+    // 只处理名称以 'Component' 开头的类型（Strapi 组件命名约定）
+    if (!typeName.startsWith('Component')) continue;
+
+    const gqlType = allTypes[typeName];
+    if (!gqlType || !isObjectType(gqlType)) {
+      console.warn(`⚠️ Type ${typeName} not found or not an object type`);
+      continue;
+    }
+
+    const fields = gqlType.getFields();
+    if (Object.keys(fields).length === 0) continue;
+
+    console.log(`\n🧩 Detected component type: ${typeName}`);
+
+    // 提取所有标量字段（包括 documentId 等，不需要过滤）
+    const scalars: string[] = [];
+    const relations: Record<string, RelationConfig | RelationConfig[]> = {};
+
+    for (const [fname, f] of Object.entries(fields)) {
+      const unwrapped = unwrap(f.type);
+      if (isScalarType(unwrapped)) {
+        scalars.push(fname);
+      } else if (isObjectType(unwrapped)) {
+        if (SKIP_SYSTEM_TYPES.includes(unwrapped.name)) continue;
+        relations[fname] = { type: unwrapped.name, fields: [] };
+      } else if (isInterfaceType(unwrapped) || isUnionType(unwrapped)) {
+        const possibleTypes = schema.getPossibleTypes(unwrapped);
+        const componentTypes = possibleTypes.map(t => t.name).filter(name => !SKIP_SYSTEM_TYPES.includes(name));
+        if (componentTypes.length > 0) {
+          relations[fname] = componentTypes.map(compType => ({ type: compType, fields: [] }));
+        }
+      }
+    }
+
+    componentConfig[typeName] = {
+      scalars,
+      relations,
+      isComponent: true,
+    };
+  }
+
+  // 合并内容类型和组件配置
+  const finalConfig = { ...config, ...componentConfig };
+  console.log(`\n📊 Total types recorded: ${Object.keys(finalConfig).length} (${Object.keys(config).length} content types + ${Object.keys(componentConfig).length} components)`);
 
   const outDir = join(process.cwd(), 'src/generated');
   if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
 
   const configPath = join(outDir, 'field-config.json');
-  writeFileSync(configPath, JSON.stringify(config, null, 2));
-  console.log(`\n✅ field-config.json generated with ${Object.keys(config).length} content types`);
+  writeFileSync(configPath, JSON.stringify(finalConfig, null, 2));
+  console.log(`\n✅ field-config.json generated with ${Object.keys(finalConfig).length} entries`);
 }
 
 main().catch(err => {
@@ -1023,11 +1089,10 @@ main().catch(err => {
 /**
  * Strapi v5 schema analyzer with root field metadata
  * - Records root field return type and accepted arguments
- * - Prefers plural list fields
- * - Only adds system fields that actually exist in the type
- * - Caches introspection result to avoid repeated network requests
- * - Enhanced error handling: timeout, retry, detailed logging
- * - Added CI token and CSRF header for production introspection
+ * - Prefers plural list fields for collections
+ * - Adds system fields that actually exist in the type
+ * - Identifies Single Types (isSingle flag)
+ * - **识别以 Component 开头的类型作为组件，包含其所有标量字段**
  */
 
 import {
@@ -1040,6 +1105,8 @@ import {
   isListType,
   GraphQLType,
   IntrospectionQuery,
+  isInterfaceType,
+  isUnionType,
 } from 'graphql';
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
@@ -1057,10 +1124,33 @@ if (!STRAPI_URL) throw new Error('PUBLIC_STRAPI_API_URL not set');
 
 const CACHE_DIR = join(__dirname, '../src/generated');
 const SCHEMA_CACHE_PATH = join(CACHE_DIR, 'schema-introspection.json');
-
 const FORCE_REFRESH = process.env.FORCE_REFRESH_SCHEMA === 'true';
 
 const SYSTEM_FIELDS = ['id', 'documentId', 'createdAt', 'updatedAt', 'publishedAt'];
+
+// 需要跳过的系统类型（不记录为内容类型或组件）
+const SKIP_SYSTEM_TYPES = [
+  'UploadFile',
+  'I18NLocale',
+  'ReviewWorkflowsWorkflow',
+  'ReviewWorkflowsWorkflowStage',
+  'UsersPermissionsRole',
+  'UsersPermissionsUser',
+  'UsersPermissionsMe',
+  'UsersPermissionsPermission',
+  'Query',
+  'Mutation',
+  'Boolean',
+  'String',
+  'Int',
+  'Float',
+  'ID',
+  'DateTime',
+  'JSON',
+  'Upload',
+  'PaginationArg',
+  'Pagination',
+];
 
 type RelationConfig = {
   type: string;
@@ -1068,11 +1158,13 @@ type RelationConfig = {
 };
 
 type ContentTypeConfig = {
-  rootField: string;
-  rootReturnType: string;
-  args: string[];
+  rootField?: string;
+  rootReturnType?: string;
+  args?: string[];
   scalars: string[];
-  relations: Record<string, RelationConfig>;
+  relations: Record<string, RelationConfig | RelationConfig[]>;
+  isSingle?: boolean;
+  isComponent?: boolean;
 };
 
 type ConfigMap = Record<string, ContentTypeConfig>;
@@ -1187,7 +1279,7 @@ async function getIntrospectionData(): Promise<IntrospectionQuery> {
 }
 
 async function main() {
-  console.log('🚀 Starting schema analysis (with root field metadata)...');
+  console.log('🚀 Starting schema analysis (with root field metadata & component detection)...');
   const introspection = await getIntrospectionData();
   const schema = buildClientSchema(introspection);
 
@@ -1202,6 +1294,7 @@ async function main() {
 
   const config: ConfigMap = {};
 
+  // ========== 1. 分析根查询字段，识别内容类型 ==========
   for (const [fieldName, field] of Object.entries(queryFields)) {
     console.log(`\n📦 Inspecting root field: ${fieldName}`);
     const innerType = unwrapToInner(field.type);
@@ -1211,6 +1304,13 @@ async function main() {
     }
 
     const typeName = innerType.name;
+
+    // 跳过系统类型
+    if (SKIP_SYSTEM_TYPES.includes(typeName)) {
+      console.log(`  ⏭️  Skipping system type: ${typeName}`);
+      continue;
+    }
+
     const fields = innerType.getFields();
     const scalarFieldNames = Object.keys(fields).filter(fname => {
       const fieldType = unwrap(fields[fname].type);
@@ -1233,12 +1333,23 @@ async function main() {
     console.log(`  ✅ Identified content type: ${typeName}`);
 
     const scalars: string[] = [];
-    const relations: Record<string, RelationConfig> = {};
+    const relations: Record<string, RelationConfig | RelationConfig[]> = {};
 
     for (const [fname, f] of Object.entries(fields)) {
       const unwrapped = unwrap(f.type);
       if (isScalarType(unwrapped)) scalars.push(fname);
-      else if (isObjectType(unwrapped)) relations[fname] = { type: unwrapped.name, fields: [] };
+      else if (isObjectType(unwrapped)) {
+        // 如果关系目标是系统类型，跳过（不记录）
+        if (SKIP_SYSTEM_TYPES.includes(unwrapped.name)) continue;
+        relations[fname] = { type: unwrapped.name, fields: [] };
+      } else if (isInterfaceType(unwrapped) || isUnionType(unwrapped)) {
+        const possibleTypes = schema.getPossibleTypes(unwrapped);
+        const componentTypes = possibleTypes.map(t => t.name).filter(name => !SKIP_SYSTEM_TYPES.includes(name));
+        if (componentTypes.length > 0) {
+          relations[fname] = componentTypes.map(compType => ({ type: compType, fields: [] }));
+          console.log(`    ⚡ Dynamic zone field: ${fname} -> possible types: ${componentTypes.join(', ')}`);
+        }
+      }
     }
 
     const actualFieldNames = new Set(Object.keys(fields));
@@ -1249,16 +1360,22 @@ async function main() {
     const rootReturnType = field.type.toString();
     const args = field.args.map(arg => arg.name);
 
+    // 判断是否为 Single Type
+    const isSingle = !rootReturnType.includes('EntityResponseCollection') && !fieldName.endsWith('s');
+
     if (!config[typeName]) {
-      config[typeName] = { rootField: fieldName, rootReturnType, args, scalars, relations };
-      console.log(`    → Set rootField to '${fieldName}' (first encounter)`);
+      config[typeName] = { rootField: fieldName, rootReturnType, args, scalars, relations, isSingle };
+      console.log(`    → Set rootField to '${fieldName}' (first encounter, isSingle=${isSingle})`);
     } else {
-      const existing = config[typeName].rootField;
-      if (shouldReplaceRootField(fieldName, existing)) {
+      const existing = config[typeName].rootField!;
+      if (!isSingle && shouldReplaceRootField(fieldName, existing)) {
         config[typeName].rootField = fieldName;
         config[typeName].rootReturnType = rootReturnType;
         config[typeName].args = args;
+        config[typeName].isSingle = false;
         console.log(`    → Updated rootField from '${existing}' to '${fieldName}' (higher priority)`);
+      } else if (isSingle && !config[typeName].isSingle) {
+        console.log(`    → Kept existing rootField '${existing}' (Collection over Single)`);
       } else {
         console.log(`    → Kept existing rootField '${existing}'`);
       }
@@ -1267,15 +1384,85 @@ async function main() {
 
   console.log('\n📋 Selected root fields per content type:');
   for (const [type, conf] of Object.entries(config)) {
-    console.log(`  - ${type}: ${conf.rootField} (args: ${conf.args.join(', ')})`);
+    console.log(`  - ${type}: ${conf.rootField} (args: ${conf.args?.join(', ')}, isSingle=${conf.isSingle})`);
   }
+
+  // ========== 2. 收集所有被引用的类型（包括组件） ==========
+  const referencedTypeNames = new Set<string>();
+  for (const contentTypeConfig of Object.values(config)) {
+    for (const rel of Object.values(contentTypeConfig.relations)) {
+      if (Array.isArray(rel)) {
+        for (const r of rel) {
+          referencedTypeNames.add(r.type);
+        }
+      } else {
+        referencedTypeNames.add(rel.type);
+      }
+    }
+  }
+
+  console.log(`\n📌 Referenced types from relations: ${Array.from(referencedTypeNames).join(', ')}`);
+
+  // ========== 3. 生成组件配置（仅处理以 Component 开头的类型） ==========
+  const allTypes = schema.getTypeMap();
+  const componentConfig: ConfigMap = {};
+
+  for (const typeName of referencedTypeNames) {
+    // 跳过已经是内容类型的
+    if (config[typeName]) continue;
+    // 跳过系统类型
+    if (SKIP_SYSTEM_TYPES.includes(typeName)) continue;
+    // 只处理名称以 'Component' 开头的类型（Strapi 组件命名约定）
+    if (!typeName.startsWith('Component')) continue;
+
+    const gqlType = allTypes[typeName];
+    if (!gqlType || !isObjectType(gqlType)) {
+      console.warn(`⚠️ Type ${typeName} not found or not an object type`);
+      continue;
+    }
+
+    const fields = gqlType.getFields();
+    if (Object.keys(fields).length === 0) continue;
+
+    console.log(`\n🧩 Detected component type: ${typeName}`);
+
+    // 提取所有标量字段（包括 documentId 等，不需要过滤）
+    const scalars: string[] = [];
+    const relations: Record<string, RelationConfig | RelationConfig[]> = {};
+
+    for (const [fname, f] of Object.entries(fields)) {
+      const unwrapped = unwrap(f.type);
+      if (isScalarType(unwrapped)) {
+        scalars.push(fname);
+      } else if (isObjectType(unwrapped)) {
+        if (SKIP_SYSTEM_TYPES.includes(unwrapped.name)) continue;
+        relations[fname] = { type: unwrapped.name, fields: [] };
+      } else if (isInterfaceType(unwrapped) || isUnionType(unwrapped)) {
+        const possibleTypes = schema.getPossibleTypes(unwrapped);
+        const componentTypes = possibleTypes.map(t => t.name).filter(name => !SKIP_SYSTEM_TYPES.includes(name));
+        if (componentTypes.length > 0) {
+          relations[fname] = componentTypes.map(compType => ({ type: compType, fields: [] }));
+        }
+      }
+    }
+
+    componentConfig[typeName] = {
+      scalars,
+      relations,
+      isComponent: true,
+    };
+  }
+
+  // 合并内容类型和组件配置
+  const finalConfig = { ...config, ...componentConfig };
+  console.log(`\n📊 Total types recorded: ${Object.keys(finalConfig).length} (${Object.keys(config).length} content types + ${Object.keys(componentConfig).length} components)`);
 
   const outDir = join(process.cwd(), 'src/generated');
   if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
 
   const configPath = join(outDir, 'field-config.json');
-  writeFileSync(configPath, JSON.stringify(config, null, 2));
-  console.log(`\n✅ field-config.json generated with ${Object.keys(config).length} content types`);
+  writeFileSync(configPath, JSON.stringify(finalConfig, null, 2));
+  console.log(`\n✅ field-config.json generated with ${Object.keys(finalConfig).length} entries`);
 }
 
 main().catch(err => {
@@ -1289,8 +1476,10 @@ main().catch(err => {
  *
  * 改进版本：
  * - 按语言拆分缓存文件
- * - 将存储结构从数组改为对象（以 documentId 为键）
+ * - 将存储结构改为对象（以 documentId 为键）
  * - 生成类型定义文件 content-cache.d.ts，反映新结构
+ * - 包装元数据（__meta），区分数据状态
+ * - 使用 SINGLE_TYPE_CACHE_KEY 常量
  */
 
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'fs';
@@ -1310,6 +1499,9 @@ const STRAPI_TOKEN = process.env.PUBLIC_STRAPI_API_TOKEN;
 if (!STRAPI_URL) {
   throw new Error('PUBLIC_STRAPI_API_URL not set');
 }
+
+// 定义 Single Type 缓存键常量
+const SINGLE_TYPE_CACHE_KEY = 'single';
 
 // 读取 field-config.json
 const fieldConfigPath = join(__dirname, '../src/generated/field-config.json');
@@ -1340,6 +1532,12 @@ function discoverListOperations(sdk: any): string[] {
   });
 }
 
+function discoverSingleOperations(sdk: any): string[] {
+  return Object.keys(sdk).filter(
+    (key) => key.startsWith('Get') && !key.endsWith('List') && typeof sdk[key] === 'function'
+  );
+}
+
 function extractContentType(operationName: string): string {
   return operationName.replace(/^Get/, '').replace(/List$/, '');
 }
@@ -1348,7 +1546,7 @@ function findMatchingTypeKey(candidate: string): string | null {
   if (fieldConfig[candidate]) return candidate;
   const lowerCandidate = candidate.toLowerCase();
   const matchedKey = Object.keys(fieldConfig).find(
-    key => key.toLowerCase() === lowerCandidate
+    (key) => key.toLowerCase() === lowerCandidate
   );
   if (matchedKey) {
     console.warn(
@@ -1492,18 +1690,39 @@ async function fetchAllPages(
   return allItems;
 }
 
-/**
- * 生成内容缓存类型定义文件（适配对象结构）
- */
-async function generateTypeDefinition(cache: Record<string, any>) {
+async function fetchSingleType(
+  sdk: any,
+  operation: string,
+  contentType: string,
+  locale?: string
+) {
+  const config = fieldConfig[contentType];
+  if (!config) throw new Error(`配置缺失: ${contentType}`);
+
+  const variables: any = {};
+  if (locale && config.args?.includes('locale')) variables.locale = locale;
+
+  try {
+    const result = await sdk[operation](variables);
+    const key = config.rootField;
+    return result[key];
+  } catch (err: any) {
+    if (isForbiddenError(err)) {
+      console.warn(`⚠️ 跳过 ${operation} (${locale}) 权限不足。`);
+      return null;
+    }
+    throw err;
+  }
+}
+
+async function generateTypeDefinition(cacheTypes: string[]) {
   const typeLines: string[] = [];
 
   typeLines.push('// Auto-generated. DO NOT EDIT.\n');
   typeLines.push(`import type * as Types from './graphql-types';\n`);
   typeLines.push(`export interface ContentCache {`);
 
-  for (const contentType of Object.keys(cache)) {
-    // 确保类型名称首字母大写（与 graphql-types 导出一致）
+  for (const contentType of cacheTypes) {
     const typeName = contentType.charAt(0).toUpperCase() + contentType.slice(1);
     typeLines.push(`  ${contentType}: Record<string, Types.${typeName}>;`);
   }
@@ -1516,77 +1735,115 @@ async function generateTypeDefinition(cache: Record<string, any>) {
 }
 
 async function buildCache() {
-  console.log('🚀 开始构建内容缓存（对象存储）...');
+  console.log('🚀 开始构建内容缓存（对象存储 + 元数据包装）...');
 
   const client = createClient();
   const sdk = getSdk(client);
 
-  const operations = discoverListOperations(sdk);
-  console.log(`🔍 发现 ${operations.length} 个列表操作:`, operations);
+  const listOperations = discoverListOperations(sdk);
+  console.log(`🔍 发现 ${listOperations.length} 个列表操作:`, listOperations);
+  const singleOperations = discoverSingleOperations(sdk);
+  console.log(`🔍 发现 ${singleOperations.length} 个单例操作:`, singleOperations);
 
   const cache: Record<string, any> = {};
+  const processedTypes = new Set<string>();
 
-  for (const op of operations) {
+  // 处理 Collection Types
+  for (const op of listOperations) {
     const rawType = extractContentType(op);
     const contentType = findMatchingTypeKey(rawType);
+    if (!contentType || SKIP_TYPES.includes(contentType)) continue;
+    const config = fieldConfig[contentType];
+    if (config.isSingle) continue;
 
-    if (!contentType) {
-      console.warn(`⚠️ 跳过 ${op}: 在 field-config.json 中未找到匹配的类型 "${rawType}"`);
-      continue;
-    }
-
-    if (SKIP_TYPES.includes(contentType)) {
-      console.log(`⏭️ 跳过系统类型 ${contentType} (操作 ${op})`);
-      continue;
-    }
-
-    console.log(`\n📦 处理操作: ${op} -> 内容类型: "${contentType}"`);
-
+    console.log(`\n📦 处理 Collection Type: ${contentType} (操作 ${op})`);
     const localeResults: Record<string, any[]> = {};
-
     for (const locale of locales) {
       console.log(`   获取 ${contentType} (${locale})`);
       const items = await fetchAllPages(sdk, op, contentType, locale);
       localeResults[locale] = items;
       console.log(`   ${locale}: ${items.length} 项`);
     }
-
     const hasAnyData = Object.values(localeResults).some(items => items.length > 0);
-    const cacheKey = contentType.toLowerCase(); // 缓存键统一小写，便于前端使用
-
+    const cacheKey = contentType.toLowerCase();
     if (hasAnyData) {
       cache[cacheKey] = localeResults;
       console.log(`✅ ${contentType} 已缓存为 "${cacheKey}"`);
-    } else {
-      console.warn(`⚠️ 完全跳过 ${contentType}（所有语言均无数据或无权限）`);
     }
+    processedTypes.add(contentType);
   }
 
-  // 确保输出目录存在
+  // 处理 Single Types
+  for (const op of singleOperations) {
+    const rawType = extractContentType(op);
+    const contentType = findMatchingTypeKey(rawType);
+    if (!contentType || SKIP_TYPES.includes(contentType)) continue;
+    const config = fieldConfig[contentType];
+    if (!config.isSingle) continue;
+
+    console.log(`\n📦 处理 Single Type: ${contentType} (操作 ${op})`);
+    const localeResults: Record<string, any> = {};
+    for (const locale of locales) {
+      console.log(`   获取 ${contentType} (${locale})`);
+      const data = await fetchSingleType(sdk, op, contentType, locale);
+      localeResults[locale] = data;
+      if (data) {
+        console.log(`   ${locale}: 数据已获取`);
+      } else {
+        console.log(`   ${locale}: 无数据或权限不足，将写入 null`);
+      }
+    }
+    const cacheKey = contentType.toLowerCase();
+    cache[cacheKey] = localeResults;
+    console.log(`✅ ${contentType} (Single) 已缓存为 "${cacheKey}"`);
+    processedTypes.add(contentType);
+  }
+
   const outputDir = join(__dirname, '../src/generated');
   const cacheDir = join(outputDir, 'cache');
   if (!existsSync(cacheDir)) {
     mkdirSync(cacheDir, { recursive: true });
   }
 
-  // 生成类型定义文件（基于新结构）
-  await generateTypeDefinition(cache);
+  await generateTypeDefinition(Array.from(processedTypes));
 
-  // 按类型和语言写入独立文件，格式为对象（以 documentId 为键）
   for (const [type, localeResults] of Object.entries(cache)) {
     const typeDir = join(cacheDir, type);
     if (!existsSync(typeDir)) {
       mkdirSync(typeDir, { recursive: true });
     }
 
-    for (const [locale, items] of Object.entries(localeResults as Record<string, any[]>)) {
-      // 将数组转换为以 documentId 为键的对象
-      const obj = Object.fromEntries(
-        items.map(item => [item.documentId, item])
-      );
+    for (const [locale, items] of Object.entries(localeResults as Record<string, any>)) {
+      const obj: Record<string, any> = {};
+      const isSingle = fieldConfig[Object.keys(fieldConfig).find(k => k.toLowerCase() === type)]?.isSingle;
+
+      if (isSingle) {
+        obj[SINGLE_TYPE_CACHE_KEY] = {
+          data: items,
+          __meta: {
+            status: items ? 'ok' : 'empty',
+            fetchedAt: Date.now(),
+          },
+        };
+      } else {
+        const itemsArray = Array.isArray(items) ? items : [];
+        for (const item of itemsArray) {
+          if (item?.documentId) {
+            obj[item.documentId] = {
+              data: item,
+              __meta: {
+                status: 'ok',
+                fetchedAt: Date.now(),
+              },
+            };
+          }
+        }
+      }
+
       const filePath = join(typeDir, `${locale}.json`);
       writeFileSync(filePath, JSON.stringify(obj, null, 2));
-      console.log(`✅ ${type}/${locale}.json 已生成 (${items.length} 项)`);
+      const itemCount = isSingle ? (items ? 1 : 0) : (Array.isArray(items) ? items.length : 0);
+      console.log(`✅ ${type}/${locale}.json 已生成 (${itemCount} 项，包装元数据)`);
     }
   }
 }
@@ -1624,7 +1881,7 @@ interface LocalesResult {
   source: string;
 }
 
-// 仅使用 REST API 获取语言列表
+// ========== 原有的获取语言列表函数（不变） ==========
 async function fetchLocalesViaRestAPI(): Promise<LocalesResult | null> {
   console.log('\n🌐 Fetching locales via REST API...');
   try {
@@ -1649,26 +1906,11 @@ async function fetchLocalesViaRestAPI(): Promise<LocalesResult | null> {
   }
 }
 
-// 通用语言名称后备（仅当 Strapi 未提供名称时使用）
 function fallbackLocaleName(code: string): string {
   return code.charAt(0).toUpperCase() + code.slice(1);
 }
 
-// 通用区域格式规则（无硬编码）
-function formatLocaleForIntl(locale: string): string {
-  // 如果已经是语言-地区格式（如 en-US），直接返回
-  if (/^[a-z]{2}-[A-Z]{2}$/.test(locale)) {
-    return locale;
-  }
-  // 如果只是语言代码（如 en），转换为 en-EN
-  if (/^[a-z]{2}$/.test(locale)) {
-    return `${locale}-${locale.toUpperCase()}`;
-  }
-  // 其他情况（如带有 script 的变体）原样返回
-  return locale;
-}
-
-// 生成配置文件
+// 生成 i18n-config.ts（原有逻辑）
 function generateConfig(localesData: StrapiLocale[], source: string): { locales: string[]; defaultLocale: string } {
   console.log(`\n📁 Generating configuration from: ${source}`);
 
@@ -1681,7 +1923,6 @@ function generateConfig(localesData: StrapiLocale[], source: string): { locales:
     throw new Error('No valid locale codes found');
   }
 
-  // 确定默认语言
   let defaultLocale = uniqueLocales[0];
   const defaultItem = localesData.find(item => item.isDefault === true);
   if (defaultItem?.code) {
@@ -1693,7 +1934,6 @@ function generateConfig(localesData: StrapiLocale[], source: string): { locales:
   console.log(`📋 Found ${uniqueLocales.length} locales: ${uniqueLocales.join(', ')}`);
   console.log(`   Default locale: ${defaultLocale}`);
 
-  // 创建 locale 详细信息
   const localeDetails = uniqueLocales.map(code => {
     const item = localesData.find(i => i.code === code);
     return {
@@ -1703,7 +1943,6 @@ function generateConfig(localesData: StrapiLocale[], source: string): { locales:
     };
   });
 
-  // 生成配置内容（内联通用区域格式函数，确保生成的文件独立）
   const configContent = `// AUTO-GENERATED FILE - DO NOT EDIT MANUALLY
 // This file is automatically generated from Strapi configuration
 // Generated at: ${new Date().toISOString()}
@@ -1729,7 +1968,6 @@ export function getLanguageName(locale: Locale): string {
 
 // 获取格式化区域设置（无硬编码的通用规则）
 export function getLocaleForFormatting(locale: Locale): string {
-  // 通用规则：如果已经是语言-地区格式则保留，否则将语言代码转换为语言-地区（如 en → en-US）
   const formatLocale = (l: string): string => {
     if (/^[a-z]{2}-[A-Z]{2}$/.test(l)) return l;
     if (/^[a-z]{2}$/.test(l)) return \`\${l}-\${l.toUpperCase()}\`;
@@ -1797,7 +2035,6 @@ export const BLOG_FIELDS = \`
 \`;
 `;
 
-  // 确保目录存在并写入文件
   const outputDir = join(__dirname, '../src/generated');
   if (!existsSync(outputDir)) {
     mkdirSync(outputDir, { recursive: true });
@@ -1812,7 +2049,6 @@ export const BLOG_FIELDS = \`
   return { locales: uniqueLocales, defaultLocale };
 }
 
-// 后备配置（所有方法失败时使用）
 function generateFallbackConfig(): void {
   console.log('\n⚠️ Using fallback configuration');
 
@@ -1913,7 +2149,127 @@ export const BLOG_FIELDS = \`
   console.log(`📁 Output: ${outputPath}`);
 }
 
-// 主函数
+// ========== 新增：翻译获取与生成 ==========
+interface TranslationItem {
+  key: string;
+  value: string;
+}
+
+/**
+ * 将点号分隔的 key 转换为嵌套对象
+ * 例如 "common.readMore" => { common: { readMore: "value" } }
+ */
+function setNestedValue(obj: any, path: string, value: string): void {
+  const keys = path.split('.');
+  let current = obj;
+  for (let i = 0; i < keys.length - 1; i++) {
+    const key = keys[i];
+    if (!current[key]) current[key] = {};
+    current = current[key];
+  }
+  current[keys[keys.length - 1]] = value;
+}
+
+/**
+ * 从 Strapi 获取指定语言的所有翻译条目（自动处理分页）
+ */
+async function fetchTranslationsForLocale(locale: string): Promise<Record<string, string>> {
+  const baseUrl = `${STRAPI_URL}/api/translations`;
+  let page = 1;
+  const pageSize = 100;
+  let hasMore = true;
+  const allItems: TranslationItem[] = [];
+
+  while (hasMore) {
+    const url = `${baseUrl}?locale=${locale}&pagination[page]=${page}&pagination[pageSize]=${pageSize}`;
+    const response = await fetch(url, {
+      headers: STRAPI_TOKEN ? { Authorization: `Bearer ${STRAPI_TOKEN}` } : {},
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch translations for ${locale}: ${response.status}`);
+    }
+    const json = await response.json();
+    const items = json.data as Array<{ key: string; value: string }>;
+    if (!items.length) break;
+    allItems.push(...items.map((item) => ({ key: item.key, value: item.value })));
+    const total = json.meta?.pagination?.total || 0;
+    if (page * pageSize >= total) hasMore = false;
+    else page++;
+  }
+
+  const result: Record<string, string> = {};
+  for (const item of allItems) {
+    result[item.key] = item.value;
+  }
+  return result;
+}
+
+/**
+ * 生成 translations.ts 文件
+ */
+async function generateTranslationsFile(locales: string[]): Promise<void> {
+  console.log('\n🌐 Fetching translations from Strapi...');
+  const allTranslations: Record<string, any> = {};
+
+  for (const locale of locales) {
+    try {
+      const flatMap = await fetchTranslationsForLocale(locale);
+      const nested: any = {};
+      for (const [key, value] of Object.entries(flatMap)) {
+        setNestedValue(nested, key, value);
+      }
+      allTranslations[locale] = nested;
+      console.log(`✅ Fetched ${Object.keys(flatMap).length} translations for ${locale}`);
+    } catch (err) {
+      console.error(`❌ Failed to fetch translations for ${locale}:`, err);
+      // 降级：使用空对象，避免构建失败
+      allTranslations[locale] = {};
+    }
+  }
+
+  // 生成 TypeScript 文件
+  const outputDir = join(__dirname, '../src/generated');
+  if (!existsSync(outputDir)) {
+    mkdirSync(outputDir, { recursive: true });
+  }
+  const outputPath = join(outputDir, 'translations.ts');
+  const fileContent = `// AUTO-GENERATED by fetch-strapi-config.ts
+// DO NOT EDIT MANUALLY
+// Generated at: ${new Date().toISOString()}
+
+import type { I18nDict } from '@/i18n/dict';
+
+export const translations: Record<string, I18nDict> = ${JSON.stringify(allTranslations, null, 2)};
+`;
+  writeFileSync(outputPath, fileContent);
+  console.log(`✅ Translations saved to ${outputPath}`);
+}
+
+// 后备翻译生成（当无法获取 locales 时）
+async function generateFallbackTranslations(): Promise<void> {
+  console.log('\n⚠️ Using fallback translations (empty)');
+  const fallbackLocales = ['en', 'es', 'fr'];
+  const allTranslations: Record<string, any> = {};
+  for (const locale of fallbackLocales) {
+    allTranslations[locale] = {};
+  }
+  const outputDir = join(__dirname, '../src/generated');
+  if (!existsSync(outputDir)) {
+    mkdirSync(outputDir, { recursive: true });
+  }
+  const outputPath = join(outputDir, 'translations.ts');
+  const fileContent = `// AUTO-GENERATED (fallback) - DO NOT EDIT
+// Generated at: ${new Date().toISOString()}
+
+import type { I18nDict } from '@/i18n/dict';
+
+export const translations: Record<string, I18nDict> = ${JSON.stringify(allTranslations, null, 2)};
+`;
+  writeFileSync(outputPath, fileContent);
+  console.log(`✅ Fallback translations saved to ${outputPath}`);
+}
+
+// ========== 主函数（整合原有逻辑和新增翻译生成） ==========
 async function fetchStrapiConfig(): Promise<void> {
   try {
     console.log('🚀 Starting Strapi configuration fetch...');
@@ -1923,15 +2279,17 @@ async function fetchStrapiConfig(): Promise<void> {
     const localesResult = await fetchLocalesViaRestAPI();
 
     if (localesResult && localesResult.data) {
-      generateConfig(localesResult.data, localesResult.source);
+      const { locales } = generateConfig(localesResult.data, localesResult.source);
+      // 生成翻译文件
+      await generateTranslationsFile(locales);
       return;
     }
 
     throw new Error('Could not retrieve locales using REST API');
-
   } catch (error: any) {
     console.error('❌ Failed to fetch Strapi configuration:', error instanceof Error ? error.message : String(error));
     generateFallbackConfig();
+    await generateFallbackTranslations();
   }
 }
 
@@ -1940,11 +2298,11 @@ fetchStrapiConfig();
 ## 文件：scripts/generate-queries-correct.ts
 // scripts/generate-queries-correct.ts
 /**
- * Generate dynamic GraphQL list queries from field-config.json
- * - Uses root field return type to determine if 'data' wrapper is needed
- * - Only includes arguments that the field actually supports
- * - Includes localizations with basic fields (documentId, slug, locale, and title if available)
- * - **改进**：自引用关系（如 Menu 的父子字段）使用全新 visited 集合，允许递归构建多层菜单
+ * Generate dynamic GraphQL queries from field-config.json
+ * - Supports both Collection Types (with pagination) and Single Types
+ * - Handles component list fields (simple object, no inline fragments needed)
+ * - **新增：支持组件类型，仅为组件生成标量字段，避免递归**
+ * - 注：由于环境启用了 GraphQL 扁平化模式，Single Type 直接返回字段，无需 data 包装
  */
 
 import { readFileSync, writeFileSync } from 'fs';
@@ -1956,11 +2314,13 @@ type RelationConfig = {
 };
 
 type ContentTypeConfig = {
-  rootField: string;
-  rootReturnType: string;
-  args: string[];
+  rootField?: string;
+  rootReturnType?: string;
+  args?: string[];
   scalars: string[];
-  relations: Record<string, RelationConfig>;
+  relations: Record<string, RelationConfig | RelationConfig[]>;
+  isSingle?: boolean;
+  isComponent?: boolean;
 };
 
 type ConfigMap = Record<string, ContentTypeConfig>;
@@ -1968,19 +2328,16 @@ type ConfigMap = Record<string, ContentTypeConfig>;
 const CONFIG_PATH = join(process.cwd(), 'src/generated/field-config.json');
 const OUTPUT_PATH = join(process.cwd(), 'src/generated/all-queries.graphql');
 
-const MAX_DEPTH = 3; // 最大递归深度，根据菜单层级可调整
+const MAX_DEPTH = 3;
 
-/**
- * Determine if the root field returns a collection wrapper (has 'data' field)
- * Based on type name containing 'EntityResponseCollection'
- */
 function hasDataWrapper(returnType: string): boolean {
   return returnType.includes('EntityResponseCollection');
 }
 
 /**
- * Recursively build selection set for a given type.
- * Special handling for 'localizations' and **self-referential relations**.
+ * 递归构建选择集。
+ * - 对于组件类型（isComponent = true），只返回标量字段，不处理 relations。
+ * - 对于内容类型，正常处理标量字段和关系字段，并限制递归深度。
  */
 function buildSelection(
   typeName: string,
@@ -1988,25 +2345,30 @@ function buildSelection(
   depth = 0,
   visited = new Set<string>()
 ): string {
-  if (!config[typeName]) return '';
+  const typeConfig = config[typeName];
+  if (!typeConfig) return '';
   if (depth > MAX_DEPTH) return '';
   if (visited.has(typeName)) return '';
 
   visited.add(typeName);
 
-  const { scalars, relations } = config[typeName];
+  const { scalars, relations, isComponent } = typeConfig;
 
+  // 组件类型：只输出标量字段，忽略关系（避免无限循环，且组件通常不包含深层嵌套关系）
+  if (isComponent) {
+    return scalars.map(f => `        ${f}`).join('\n');
+  }
+
+  // 内容类型：处理标量和关系
   const scalarLines = scalars.map(f => `        ${f}`);
 
   const relationLines = Object.entries(relations).map(([fieldName, rel]) => {
-    // 特殊处理 localizations：只取基础字段，避免过度递归
     if (fieldName === 'localizations') {
+      if (Array.isArray(rel)) return '';
       const locConfig = config[rel.type];
       if (!locConfig) return '';
 
-      // 始终包含的基础字段
       const baseFields = ['documentId', 'locale'];
-      // 动态添加可能存在的字段
       const extraFields: string[] = [];
       if (locConfig.scalars.includes('slug')) extraFields.push('slug');
       if (locConfig.scalars.includes('title')) extraFields.push('title');
@@ -2020,9 +2382,7 @@ ${subFieldLines}
         }`;
     }
 
-    // **关键改进：处理自引用关系（如 Menu 的父子字段）**
-    if (rel.type === typeName) {
-      // 使用全新的 visited 集合，允许递归但受深度限制
+    if (!Array.isArray(rel) && rel.type === typeName) {
       const nested = buildSelection(rel.type, config, depth + 1, new Set());
       if (!nested.trim()) return '';
       return `
@@ -2031,12 +2391,33 @@ ${nested}
         }`;
     }
 
-    // 普通关系：继续使用当前 visited 集合（避免重复展开同一类型）
-    const nested = buildSelection(rel.type, config, depth + 1, new Set(visited));
-    if (!nested.trim()) return '';
-    return `
+    if (!Array.isArray(rel)) {
+      const nested = buildSelection(rel.type, config, depth + 1, new Set(visited));
+      if (!nested.trim()) return '';
+      return `
         ${fieldName} {
 ${nested}
+        }`;
+    }
+
+    // 动态区域（Dynamic Zone）：为每个可能的组件类型生成 inline fragment
+    const fragments = rel.map(compRel => {
+      const compType = compRel.type;
+      const compConfig = config[compType];
+      if (!compConfig) return '';
+
+      const compSelection = buildSelection(compType, config, depth + 1, new Set(visited));
+      if (!compSelection.trim()) return '';
+
+      return `        ... on ${compType} {
+${compSelection}
+        }`;
+    }).filter(Boolean).join('\n');
+
+    if (!fragments) return '';
+    return `
+        ${fieldName} {
+${fragments}
         }`;
   });
 
@@ -2047,21 +2428,24 @@ function generateQueries(config: ConfigMap): string {
   let output = '';
 
   for (const [typeName, conf] of Object.entries(config)) {
-    const { rootField, rootReturnType, args } = conf;
+    // 跳过组件类型，只为内容类型（有 rootField）生成查询
+    if (conf.isComponent) continue;
+    if (!conf.rootField) continue;
 
-    // 根据支持的参数构建变量定义和参数赋值
+    const { rootField, rootReturnType, args, isSingle } = conf;
+
     const varDefs: string[] = [];
     const argAssignments: string[] = [];
 
-    if (args.includes('locale')) {
+    if (args?.includes('locale')) {
       varDefs.push('$locale: I18NLocaleCode');
       argAssignments.push('locale: $locale');
     }
-    if (args.includes('pagination')) {
+    if (!isSingle && args?.includes('pagination')) {
       varDefs.push('$pagination: PaginationArg');
       argAssignments.push('pagination: $pagination');
     }
-    if (args.includes('sort')) {
+    if (!isSingle && args?.includes('sort')) {
       varDefs.push('$sort: [String]');
       argAssignments.push('sort: $sort');
     }
@@ -2069,22 +2453,21 @@ function generateQueries(config: ConfigMap): string {
     const varSection = varDefs.length > 0 ? `(\n  ${varDefs.join(',\n  ')}\n)` : '';
     const argSection = argAssignments.length > 0 ? `(\n    ${argAssignments.join(',\n    ')}\n  )` : '';
 
-    // 构建选择集
     const innerSelection = buildSelection(typeName, config);
     if (!innerSelection.trim()) continue;
 
     let selectionSet: string;
-    if (hasDataWrapper(rootReturnType)) {
-      // 带 data 包装的格式
+    if (!isSingle && hasDataWrapper(rootReturnType!)) {
       selectionSet = `    data {\n${innerSelection}\n    }`;
-      // 可根据需要添加 meta 分页信息
     } else {
-      // 直接数组格式
+      // Single Type 直接展开（扁平化模式）
       selectionSet = innerSelection;
     }
 
+    const opName = isSingle ? `Get${typeName}` : `Get${typeName}List`;
+
     output += `
-query Get${typeName}List${varSection} {
+query ${opName}${varSection} {
   ${rootField}${argSection} {
 ${selectionSet}
   }
@@ -2107,7 +2490,7 @@ main();
 ## 文件：scripts/update-cache-entry.ts
 #!/usr/bin/env tsx
 // scripts/update-cache-entry.ts
-import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, renameSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { GraphQLClient, gql } from 'graphql-request';
@@ -2124,279 +2507,172 @@ if (!STRAPI_URL) throw new Error('PUBLIC_STRAPI_API_URL not set');
 
 const CACHE_DIR = join(__dirname, '../src/generated/cache');
 const MAX_DEPTH = 3;
+const SINGLE_TYPE_CACHE_KEY = 'single';
 
 const client = new GraphQLClient(`${STRAPI_URL}/graphql`, {
   headers: STRAPI_TOKEN ? { Authorization: `Bearer ${STRAPI_TOKEN}` } : {},
 });
 
-const options = {
-  model: { type: 'string' as const, required: true },
-  id: { type: 'string' as const, required: true },
-  locale: { type: 'string' as const, required: false },
-  event: { type: 'string' as const, required: true },
-};
-const { values } = parseArgs({ args: process.argv.slice(2), options });
-const { model, id, locale, event } = values;
-
-const effectiveLocale = locale && locale !== 'undefined' ? locale : defaultLocale;
-
 const fieldConfigPath = join(__dirname, '../src/generated/field-config.json');
-if (!existsSync(fieldConfigPath)) {
-  console.error('field-config.json not found. Run full build first.');
-  process.exit(1);
-}
+if (!existsSync(fieldConfigPath)) { console.error('field-config.json not found. Run full build first.'); process.exit(1); }
 const fieldConfig = JSON.parse(readFileSync(fieldConfigPath, 'utf-8'));
 
 function normalizeModel(model: string): string {
-  return model
-    .replace(/^api::/, '')
-    .split('.')
-    .pop()
-    ?.toLowerCase() ?? '';
+  return model.replace(/^api::/, '').split('.').pop()?.toLowerCase() ?? '';
 }
-
-const normalizedModel = normalizeModel(model);
-
-const typeKey = Object.keys(fieldConfig).find(
-  key => key.toLowerCase() === normalizedModel
-);
-if (!typeKey) {
-  console.error(`Content type "${model}" (normalized: "${normalizedModel}") not found in field-config.json`);
-  process.exit(1);
-}
-const typeConfig = fieldConfig[typeKey];
 
 function indent(block: string, spaces = 8): string {
   const pad = ' '.repeat(spaces);
-  return block
-    .split('\n')
-    .map(line => (line ? pad + line : line))
-    .join('\n');
+  return block.split('\n').map(line => line ? pad + line : line).join('\n');
 }
 
-/**
- * 递归构建查询选择集（强制包含 documentId）
- */
-function buildSelection(
-  typeName: string,
-  visited = new Set<string>(),
-  depth = 0
-): string {
+function buildSelection(typeName: string, visited = new Set<string>(), depth = 0): string {
   if (depth > MAX_DEPTH) return '';
   if (visited.has(typeName)) return '';
   visited.add(typeName);
-
   const config = fieldConfig[typeName];
   if (!config) return '';
-
   const { scalars = [], relations = {} as Record<string, any> } = config;
-
-  const scalarLines = [
-    'documentId',
-    ...scalars.filter((f: string) => f !== 'documentId'),
-  ];
-
-  const relationLines = Object.entries(relations)
-    .map(([fieldName, rel]: [string, any]) => {
-      // 特殊处理 localizations：只取基础字段，避免过度递归
-      if (fieldName === 'localizations') {
-        const locConfig = fieldConfig[rel.type];
-        if (!locConfig) return '';
-
-        const locScalars = locConfig.scalars ?? [];
-
-        const baseFields = ['documentId', 'locale'];
-        const extraFields: string[] = [];
-
-        if (locScalars.includes('slug')) extraFields.push('slug');
-        if (locScalars.includes('title')) extraFields.push('title');
-
-        const subFields = [...baseFields, ...extraFields];
-        const subFieldLines = subFields.map(f => `          ${f}`).join('\n');
-        return `
-        localizations {
-${subFieldLines}
-        }`;
-      }
-
-      // 处理自引用关系：使用全新的 visited 集合，允许递归，仅受深度限制
-      if (rel.type === typeName) {
-        const nested = buildSelection(rel.type, new Set(), depth + 1);
-        if (!nested.trim()) return '';
-        return `
-        ${fieldName} {
-${indent(nested)}
-        }`;
-      }
-
-      // 普通关系：继续传递当前 visited 集合（已包含当前路径）
-      const nested = buildSelection(rel.type, new Set(visited), depth + 1);
+  const scalarLines = ['documentId', ...scalars.filter((f: string) => f !== 'documentId')];
+  const relationLines = Object.entries(relations).map(([fieldName, rel]: [string, any]) => {
+    if (fieldName === 'localizations') {
+      const locConfig = fieldConfig[rel.type];
+      if (!locConfig) return '';
+      const locScalars = locConfig.scalars ?? [];
+      const baseFields = ['documentId', 'locale'];
+      const extraFields: string[] = [];
+      if (locScalars.includes('slug')) extraFields.push('slug');
+      if (locScalars.includes('title')) extraFields.push('title');
+      const subFields = [...baseFields, ...extraFields];
+      const subFieldLines = subFields.map(f => `          ${f}`).join('\n');
+      return `\n        localizations {\n${subFieldLines}\n        }`;
+    }
+    if (rel.type === typeName) {
+      const nested = buildSelection(rel.type, new Set(), depth + 1);
       if (!nested.trim()) return '';
-      return `
-        ${fieldName} {
-${indent(nested)}
-        }`;
-    })
-    .filter(Boolean);
-
+      return `\n        ${fieldName} {\n${indent(nested)}\n        }`;
+    }
+    const nested = buildSelection(rel.type, new Set(visited), depth + 1);
+    if (!nested.trim()) return '';
+    return `\n        ${fieldName} {\n${indent(nested)}\n        }`;
+  }).filter(Boolean);
   return [...scalarLines, ...relationLines].join('\n').trim();
 }
 
-function buildQueryVariables() {
+function buildQueryVariables(typeConfig: any) {
   const args = typeConfig.args || [];
-  const varDefs: string[] = [];
-  const argAssignments: string[] = [];
-
-  if (args.includes('filters')) {
-    varDefs.push('$id: ID!');
-    argAssignments.push('filters: { documentId: { eq: $id } }');
-  }
-  if (args.includes('locale')) {
-    varDefs.push('$locale: I18NLocaleCode');
-    argAssignments.push('locale: $locale');
-  }
-  if (args.includes('pagination')) {
-    varDefs.push('$pagination: PaginationArg');
-    argAssignments.push('pagination: $pagination');
-  }
-
+  const varDefs: string[] = [], argAssignments: string[] = [];
+  if (args.includes('filters')) { varDefs.push('$id: ID!'); argAssignments.push('filters: { documentId: { eq: $id } }'); }
+  if (args.includes('locale')) { varDefs.push('$locale: I18NLocaleCode'); argAssignments.push('locale: $locale'); }
+  if (args.includes('pagination')) { varDefs.push('$pagination: PaginationArg'); argAssignments.push('pagination: $pagination'); }
   return { varDefs, argAssignments };
 }
 
-async function fetchEntry(id: string, locale: string): Promise<any> {
+async function fetchEntry(id: string, locale: string, typeKey: string) {
+  const typeConfig = fieldConfig[typeKey];
   const selection = buildSelection(typeKey);
-
-  if (!selection) {
-    throw new Error(`GraphQL selection for ${typeKey} is empty`);
-  }
-
-  const { varDefs, argAssignments } = buildQueryVariables();
-
+  if (!selection) throw new Error(`GraphQL selection for ${typeKey} is empty`);
+  const { varDefs, argAssignments } = buildQueryVariables(typeConfig);
   const varSection = varDefs.length > 0 ? `(\n  ${varDefs.join(',\n  ')}\n)` : '';
   const argSection = argAssignments.length > 0 ? `(\n    ${argAssignments.join(',\n    ')}\n  )` : '';
-
   const safeOpName = typeConfig.rootField.replace(/[^A-Za-z0-9_]/g, '') || 'Content';
   const query = gql`
-    query Get${safeOpName}Entry${varSection ? ` ${varSection}` : ''} {
+    query Get${safeOpName}Entry${varSection} {
       ${typeConfig.rootField}${argSection} {
         ${selection}
       }
     }
   `;
-
   const variables: any = { id };
   if (argAssignments.some(a => a.includes('locale'))) variables.locale = locale;
   if (argAssignments.some(a => a.includes('pagination'))) variables.pagination = { limit: 1 };
-
   const result = await client.request(query, variables);
   const root = result[typeConfig.rootField];
-
   if (!root) return null;
-
-  if (Array.isArray(root)) {
-    return root[0] ?? null;
-  }
-
-  if (root.data) {
-    if (Array.isArray(root.data)) {
-      return root.data[0] ?? null;
-    }
-    return root.data;
-  }
-
-  if (root.nodes && Array.isArray(root.nodes)) {
-    return root.nodes[0] ?? null;
-  }
-
+  if (Array.isArray(root)) return root[0] ?? null;
+  if (root.data) { if (Array.isArray(root.data)) return root.data[0] ?? null; return root.data; }
+  if (root.nodes && Array.isArray(root.nodes)) return root.nodes[0] ?? null;
   return null;
 }
 
-function writeJsonAtomic(path: string, data: any) {
-  const tmp = path + '.tmp';
-  writeFileSync(tmp, JSON.stringify(data, null, 2));
-  renameSync(tmp, path);
-}
+function writeJsonAtomic(path: string, data: any) { const tmp = path + '.tmp'; writeFileSync(tmp, JSON.stringify(data, null, 2)); renameSync(tmp, path); }
 
-async function updateCache() {
+export async function updateCacheEntry(params: { model: string; id: string; locale?: string | null; action: string }) {
+  const { model, id, locale, action } = params;
+  const normalizedModel = normalizeModel(model);
+  const typeKey = Object.keys(fieldConfig).find(key => key.toLowerCase() === normalizedModel);
+  if (!typeKey) { console.error(`Content type "${model}" (normalized: "${normalizedModel}") not found in field-config.json`); return; }
+  const effectiveLocale = locale && locale !== 'undefined' ? locale : defaultLocale;
   const cacheTypeDir = join(CACHE_DIR, typeKey.toLowerCase());
-
-  if (!existsSync(cacheTypeDir)) {
-    mkdirSync(cacheTypeDir, { recursive: true });
-  }
-
-  // 修正：删除事件只影响指定语言的缓存文件，而不是遍历所有语言
-  if (event === 'delete' || event === 'unpublish') {
-    const cacheFile = join(cacheTypeDir, `${effectiveLocale}.json`);
-    if (!existsSync(cacheFile)) {
-      console.log(`[cache] Cache file ${cacheFile} not found, nothing to delete.`);
-      return;
-    }
-
-    const raw = JSON.parse(readFileSync(cacheFile, 'utf-8'));
-    if (typeof raw !== 'object' || Array.isArray(raw)) {
-      console.warn(`[cache] Invalid cache file format in ${cacheFile}, skipping.`);
-      return;
-    }
-
-    if (raw[id]) {
-      delete raw[id];
-      writeJsonAtomic(cacheFile, raw);
-      console.log(`[cache] Removed ${id} from ${effectiveLocale}.json (event: ${event})`);
-    } else {
-      console.log(`[cache] Entry ${id} not found in ${effectiveLocale}.json, nothing to remove.`);
-    }
-    return;
-  }
-
-  // 对于更新/发布/创建，只更新指定语言的缓存文件
+  if (!existsSync(cacheTypeDir)) mkdirSync(cacheTypeDir, { recursive: true });
   const cacheFile = join(cacheTypeDir, `${effectiveLocale}.json`);
-
   let entriesObj: Record<string, any> = {};
-
   if (existsSync(cacheFile)) {
     const raw = JSON.parse(readFileSync(cacheFile, 'utf-8'));
-    if (typeof raw !== 'object' || Array.isArray(raw)) {
-      console.warn(`[cache] Cache file ${cacheFile} is corrupted (expected object). Will overwrite with new data.`);
-      entriesObj = {};
-    } else {
-      entriesObj = raw;
-    }
-  } else {
-    console.warn(`[cache] Cache file ${cacheFile} not found, will create new one.`);
+    if (typeof raw !== 'object' || Array.isArray(raw)) console.warn(`[cache] Cache file ${cacheFile} is corrupted. Will overwrite.`);
+    else entriesObj = raw;
   }
-
-  const newEntry = await fetchEntry(id, effectiveLocale);
-
-  if (!newEntry) {
-    if (entriesObj[id]) {
-      delete entriesObj[id];
-      writeJsonAtomic(cacheFile, entriesObj);
-      console.log(`[cache] Removed unpublished ${typeKey.toLowerCase()}/${effectiveLocale} → ${id}`);
-    } else {
-      console.log(`[cache] Entry ${id} not found in cache, nothing to remove`);
-    }
+  if (action === 'delete' || action === 'unpublish') {
+    if (entriesObj[id]) { delete entriesObj[id]; writeJsonAtomic(cacheFile, entriesObj); console.log(`[cache] Removed ${typeKey.toLowerCase()}/${effectiveLocale} → ${id} (${action})`); }
+    else console.log(`[cache] Entry ${id} not found in ${cacheFile}, nothing to remove.`);
     return;
   }
-
-  const wasPresent = id in entriesObj;
-  entriesObj[id] = newEntry;
-
-  if (wasPresent) {
-    console.log(`[cache] Updated ${typeKey.toLowerCase()}/${effectiveLocale} → ${id}`);
-  } else {
-    console.log(`[cache] Added ${typeKey.toLowerCase()}/${effectiveLocale} → ${id}`);
+  const newEntry = await fetchEntry(id, effectiveLocale, typeKey);
+  if (!newEntry) {
+    if (entriesObj[id]) { delete entriesObj[id]; writeJsonAtomic(cacheFile, entriesObj); console.log(`[cache] Removed unpublished ${typeKey.toLowerCase()}/${effectiveLocale} → ${id}`); }
+    else console.log(`[cache] Entry ${id} not found in Strapi, nothing to remove`);
+    return;
   }
-
+  const isSingle = fieldConfig[typeKey]?.isSingle;
+  let wrapped: any;
+  if (isSingle) {
+    wrapped = { data: newEntry, __meta: { status: 'ok', fetchedAt: Date.now() } };
+    entriesObj[SINGLE_TYPE_CACHE_KEY] = wrapped;
+  } else {
+    wrapped = { data: newEntry, __meta: { status: 'ok', fetchedAt: Date.now() } };
+    entriesObj[id] = wrapped;
+  }
   writeJsonAtomic(cacheFile, entriesObj);
-  console.log(`[cache] File updated: ${cacheFile}`);
+  console.log(`[cache] ${entriesObj[id] ? 'Updated' : 'Added'} ${typeKey.toLowerCase()}/${effectiveLocale} → ${id} (wrapped with meta)`);
 }
 
-updateCache().catch(err => {
-  console.error('[cache] Error:', err);
-  process.exit(1);
-});
+async function main() {
+  const options = { model: { type: 'string' as const, required: true }, id: { type: 'string' as const, required: true }, locale: { type: 'string' as const, required: false }, event: { type: 'string' as const, required: true } };
+  const { values } = parseArgs({ args: process.argv.slice(2), options });
+  const { model, id, locale, event } = values;
+  await updateCacheEntry({ model, id, locale, action: event });
+}
+if (import.meta.url === `file://${process.argv[1]}`) main().catch(err => { console.error('[cache] Error:', err); process.exit(1); });
 
 ## 文件：scripts/validate-footer-types.ts
+#!/usr/bin/env tsx
+// scripts/validate-footer-types.ts
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const typesFile = join(__dirname, '../src/generated/graphql-types.ts');
+
+try {
+  const content = readFileSync(typesFile, 'utf-8');
+  const requiredTypes = ['Footer', 'ComponentFooterLinkItem', 'ComponentFooterFooterLinkGroup', 'ComponentFooterIconLink'];
+  const missing: string[] = [];
+  for (const type of requiredTypes) {
+    const pattern = new RegExp(`export\\s+(type|interface)\\s+${type}\\b`);
+    if (!pattern.test(content)) missing.push(type);
+  }
+  if (missing.length > 0) {
+    console.error(`❌ Missing GraphQL types: ${missing.join(', ')}`);
+    console.error('   Please ensure Strapi components and Footer Single Type are properly configured.');
+    process.exit(1);
+  }
+  console.log('✅ Footer GraphQL types validated successfully.');
+} catch (err) {
+  console.error(`❌ Failed to read graphql-types.ts: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+}
 
 ## 文件：src/components/BaseHead.astro
 ---
@@ -2505,28 +2781,100 @@ const imageUrl = image ? new URL(image.src, siteUrl).toString() : undefined;
 </head>
 
 ## 文件：src/components/Footer.vue
+<!-- src/components/Footer.vue -->
 <script lang="ts" setup>
-import siteConfig from '@/site-config'
-import { getLinkTarget } from '@/utils/link'
+import { computed } from 'vue'
+import type { FooterData, StrapiBlock } from '@/types'
+import RichTextRenderer from './RichTextRenderer.vue'
+
+const props = defineProps<{ footer?: FooterData | null }>()
+
+const getIconUrl = (icon: FooterData['certifications'][0]['icon']) => {
+  if (Array.isArray(icon) && icon.length > 0) return icon[0].url
+  return undefined
+}
+
+const getTarget = (target: string | null | undefined): string => {
+  return target === '_blank' ? '_blank' : '_self'
+}
+
+const isRichText = (val: any): val is StrapiBlock[] => {
+  return Array.isArray(val) && val.length > 0 && typeof val[0] === 'object' && 'type' in val[0]
+}
+
+// 递归替换文本节点中的 {{year}}
+function replaceYearPlaceholder(nodes: StrapiBlock[]): StrapiBlock[] {
+  const currentYear = new Date().getFullYear().toString()
+  const processNode = (node: any): any => {
+    if (node.type === 'text' && node.text) {
+      return { ...node, text: node.text.replace(/\{\{year\}\}/g, currentYear) }
+    }
+    if (node.children && Array.isArray(node.children)) {
+      return { ...node, children: node.children.map(processNode) }
+    }
+    return node
+  }
+  return nodes.map(processNode)
+}
+
+const processedCopyright = computed(() => {
+  if (!props.footer?.copyright) return null
+  if (isRichText(props.footer.copyright)) {
+    return replaceYearPlaceholder(props.footer.copyright)
+  }
+  const year = new Date().getFullYear().toString()
+  return (props.footer.copyright as string).replace(/\{\{year\}\}/g, year)
+})
 </script>
 
 <template>
-  <footer class="w-full mt-18 pt-6 pb-8 max-w-3xl text-sm flex flex-col gap-4 border-main border-t !border-op-50 text-dark dark:text-white">
-    <div v-if="siteConfig.footer.navLinks && siteConfig.footer.navLinks.length > 0" class="flex flex-wrap gap-4">
-      <template v-for="(link, index) in siteConfig.footer.navLinks" :key="link.text">
-        <a
-          :aria-label="`${link.text}`" :target="getLinkTarget(link.href)" class="nav-link flex items-center"
-          :href="link.href"
-        >
-          {{ link.text }}
+  <footer class="w-full mt-18 pt-6 pb-8 max-w-2xl mx-auto text-sm flex flex-col gap-4 border-main border-t !border-op-50 text-dark dark:text-white">
+    <!-- 产品分类 -->
+    <div v-if="footer?.product_categories?.length" class="flex flex-wrap gap-4">
+      <template v-for="(link, index) in footer.product_categories" :key="link.url">
+        <a :aria-label="link.label" :target="getTarget(link.target)" class="nav-link flex items-center" :href="link.url">
+          {{ link.label }}
         </a>
-        <span v-if="index < siteConfig.footer.navLinks.length - 1" op-70> / </span>
+        <span v-if="index < footer.product_categories.length - 1" op-70> / </span>
       </template>
     </div>
-    <div flex>
-      <a nav-link href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank">CC BY-NC-SA 4.0</a>
-      <span op-70>&nbsp;&nbsp;&copy;&nbsp;&nbsp;{{ new Date().getFullYear() }}&nbsp;&nbsp;{{ siteConfig.author
-      }}.</span>
+
+    <!-- 右侧分组 -->
+    <div v-if="footer?.right_groups?.length" class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-2">
+      <div v-for="group in footer.right_groups" :key="group.group_title">
+        <h3 class="font-semibold mb-2 text-gray-800 dark:text-gray-200">{{ group.group_title }}</h3>
+        <ul class="space-y-1">
+          <li v-for="link in group.links" :key="link.url">
+            <a :href="link.url" :target="getTarget(link.target)" class="text-gray-600 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+              {{ link.label }}
+            </a>
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 认证图标 -->
+    <div v-if="footer?.certifications?.length" class="flex flex-wrap gap-6 justify-center my-2">
+      <a v-for="cert in footer.certifications" :key="cert.url" :href="cert.url" target="_blank" rel="noopener noreferrer" class="inline-flex flex-col items-center text-gray-600 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors" :title="cert.label">
+        <img v-if="getIconUrl(cert.icon)" :src="getIconUrl(cert.icon)" :alt="cert.label" class="h-8 w-auto object-contain" loading="lazy" />
+        <span class="text-xs mt-1">{{ cert.label }}</span>
+      </a>
+    </div>
+
+    <!-- 底部链接（居中） -->
+    <div v-if="footer?.footer_links?.length" class="flex flex-wrap gap-4 justify-center">
+      <template v-for="(link, index) in footer.footer_links" :key="link.url">
+        <a :aria-label="link.label" :target="getTarget(link.target)" class="nav-link flex items-center" :href="link.url">
+          {{ link.label }}
+        </a>
+        <span v-if="index < footer.footer_links.length - 1" op-70> / </span>
+      </template>
+    </div>
+
+    <!-- 版权信息（居中，支持动态年份） -->
+    <div v-if="footer?.copyright" class="text-center mt-4" op-70>
+      <RichTextRenderer v-if="isRichText(footer.copyright)" :content="processedCopyright" />
+      <span v-else>{{ processedCopyright }}</span>
     </div>
   </footer>
 </template>
@@ -3315,13 +3663,98 @@ const htmlContent = hasContent
 )}
 
 ## 文件：src/components/RichTextRenderer.vue
+<!-- src/components/RichTextRenderer.vue -->
+<script lang="ts" setup>
+import type { StrapiBlock, StrapiTextNode, StrapiLinkNode } from '@/types'
+import { computed } from 'vue'
+
+interface Props {
+  content: StrapiBlock[]
+  className?: string
+}
+
+const props = withDefaults(defineProps<Props>(), { className: '' })
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function renderTextNode(node: StrapiTextNode): string {
+  let text = escapeHtml(node.text)
+  if (node.bold) text = `<strong>${text}</strong>`
+  if (node.italic) text = `<em>${text}</em>`
+  if (node.underline) text = `<u>${text}</u>`
+  if (node.strikethrough) text = `<s>${text}</s>`
+  if (node.code) text = `<code>${text}</code>`
+  return text
+}
+
+function renderLinkNode(node: StrapiLinkNode): string {
+  const target = node.url?.startsWith('http') ? 'target="_blank" rel="noopener noreferrer"' : ''
+  const childrenHtml = renderChildren(node.children)
+  return `<a href="${escapeHtml(node.url)}" ${target}>${childrenHtml}</a>`
+}
+
+function renderChildren(children: Array<StrapiTextNode | StrapiLinkNode>): string {
+  return children.map(child => {
+    if (child.type === 'text') return renderTextNode(child)
+    if (child.type === 'link') return renderLinkNode(child)
+    return ''
+  }).join('')
+}
+
+function renderBlock(block: StrapiBlock): string {
+  switch (block.type) {
+    case 'paragraph':
+      return `<p>${renderChildren(block.children)}</p>`
+    case 'heading':
+      return `<h${block.level} class="heading-${block.level}">${renderChildren(block.children)}</h${block.level}>`
+    case 'list':
+      const tag = block.format === 'ordered' ? 'ol' : 'ul'
+      const listClass = block.format === 'ordered' ? 'list-decimal' : 'list-disc'
+      const itemsHtml = block.children.map(item => renderBlock(item)).join('')
+      return `<${tag} class="${listClass}">${itemsHtml}</${tag}>`
+    case 'list-item':
+      return `<li>${renderChildren(block.children)}</li>`
+    case 'quote':
+      return `<blockquote>${block.children.map(p => renderBlock(p)).join('')}</blockquote>`
+    case 'code':
+      const codeContent = block.children.map(child => child.text).join('')
+      const language = block.language ? ` class="language-${block.language}"` : ''
+      return `<pre><code${language}>${escapeHtml(codeContent)}</code></pre>`
+    case 'image':
+      const img = block.image
+      if (!img?.url) return ''
+      return `<img src="${img.url}" alt="${escapeHtml(img.alternativeText || '')}" loading="lazy" width="${img.width || ''}" height="${img.height || ''}" />`
+    default:
+      if ('children' in block && Array.isArray((block as any).children)) {
+        return renderChildren((block as any).children)
+      }
+      return ''
+  }
+}
+
+const htmlContent = computed(() => {
+  if (!props.content?.length) return ''
+  return props.content.map(block => renderBlock(block)).join('')
+})
+</script>
+
+<template>
+  <div v-if="content?.length" :class="['rich-text-content', className]" v-html="htmlContent" />
+  <div v-else :class="['rich-text-empty', className]">No content available</div>
+</template>
 
 ## 文件：src/i18n/dict.ts
 // src/i18n/dict.ts
 import type { Locale } from '@/generated/i18n-config';
 import { locales, defaultLocale } from '@/generated/i18n-config';
-import fs from 'fs';
-import path from 'path';
+import { translations } from '@/generated/translations';
 
 export interface I18nDict {
   common: {
@@ -3339,7 +3772,7 @@ export interface I18nDict {
     by: string;
     on: string;
     minRead: string;
-    categories: string;          // 新增：分类标签
+    categories: string;
   };
   home: {
     welcome: string;
@@ -3358,53 +3791,37 @@ export interface I18nDict {
   };
 }
 
-/**
- * 加载指定语言的翻译 JSON 文件
- * 使用 process.cwd() 定位项目根目录，确保构建时能正确读取源码中的 JSON
- */
-function loadTranslations(locale: string): I18nDict {
-  const translationsDir = path.join(process.cwd(), 'src/i18n/translations');
-  const filePath = path.join(translationsDir, `${locale}.json`);
+// 直接使用生成的翻译数据
+export const dict: Record<Locale, I18nDict> = translations as Record<Locale, I18nDict>;
 
-  try {
-    const content = fs.readFileSync(filePath, 'utf-8');
-    return JSON.parse(content) as I18nDict;
-  } catch (error) {
-    console.warn(`[i18n] Translation file not found for locale '${locale}' at ${filePath}, falling back to '${defaultLocale}'.`);
-    if (locale !== defaultLocale) {
-      return loadTranslations(defaultLocale);
-    }
-    throw new Error(`Missing translation file for default locale '${defaultLocale}'. Expected at: ${path.join(translationsDir, `${defaultLocale}.json`)}`);
+// 可选：对缺失的语言或 key 进行降级处理
+function getValue(locale: Locale, keys: string[]): any {
+  let current: any = dict[locale];
+  if (!current) {
+    if (locale !== defaultLocale) return getValue(defaultLocale, keys);
+    return undefined;
   }
+  for (const k of keys) {
+    if (current === undefined) break;
+    current = current[k];
+  }
+  return current;
 }
-
-// 动态构建完整的翻译字典
-export const dict: Record<Locale, I18nDict> = {} as Record<Locale, I18nDict>;
-
-// 为每个支持的语言填充字典
-locales.forEach((locale) => {
-  dict[locale] = loadTranslations(locale);
-});
 
 /**
  * 类型安全的翻译函数
- * @param locale 当前语言
- * @param key 点分隔的键路径，例如 "common.readMore"
- * @param vars 可选变量替换对象，如 { name: 'World' } 会替换 {{name}}
  */
 export function t(locale: Locale, key: string, vars?: Record<string, string>): string {
   const keys = key.split('.');
-  let value: any = dict[locale];
+  let value = getValue(locale, keys);
 
-  for (const k of keys) {
-    if (value === undefined) {
-      console.warn(`[i18n] Missing key: ${key} in locale: ${locale}`);
-      if (locale !== defaultLocale) {
-        return t(defaultLocale, key, vars);
-      }
-      return key;
+  if (value === undefined) {
+    console.warn(`[i18n] Missing key: ${key} in locale: ${locale}`);
+    // 回退到默认语言
+    if (locale !== defaultLocale) {
+      return t(defaultLocale, key, vars);
     }
-    value = value[k];
+    return key;
   }
 
   if (typeof value === 'string' && vars) {
@@ -3417,9 +3834,6 @@ export function t(locale: Locale, key: string, vars?: Record<string, string>): s
   return value || key;
 }
 
-/**
- * 获取所有支持的语言列表
- */
 export function getSupportedLocales(): Locale[] {
   return [...locales];
 }
@@ -3484,102 +3898,6 @@ export function getLocalizedUrl(currentUrl: URL, targetLocale: Locale): string {
 // 导出配置中的工具函数
 export { getLanguageName, getHtmlLang, getLocaleForFormatting };
 
-## 文件：src/i18n/translations/en.json
-{
-  "common": {
-    "readMore": "Read more →",
-    "backToBlog": "← Back to blog",
-    "availableIn": "Available in other languages",
-    "recentPosts": "Recent Posts",
-    "language": "Language",
-    "noPosts": "No blog posts yet.",
-    "lastUpdated": "Last updated",
-    "by": "by",
-    "on": "on",
-    "minRead": "min read",
-    "categories": "Categories"
-  },
-  "home": {
-    "welcome": "Vitesse theme",
-    "subtitle": "Vitesse theme for Astro, supports Vue and UnoCSS.",
-    "description": "A Minimal, SEO-friendly portfolio and blog theme for Astro.",
-    "findMeOn": "Find me on"
-  },
-  "blog": {
-    "title": "Blog",
-    "allPosts": "All blog posts"
-  },
-  "notFound": {
-    "title": "404 - Page Not Found",
-    "description": "Sorry, we couldn't find what you were looking for.",
-    "returnHome": "Return Home"
-  }
-}
-
-## 文件：src/i18n/translations/es.json
-{
-  "common": {
-    "readMore": "Leer más →",
-    "backToBlog": "← Volver al blog",
-    "availableIn": "Disponible en otros idiomas",
-    "recentPosts": "Publicaciones Recientes",
-    "language": "Idioma",
-    "noPosts": "Aún no hay publicaciones.",
-    "lastUpdated": "Última actualización",
-    "by": "por",
-    "on": "el",
-    "minRead": "min de lectura",
-    "categories": "Categorías"
-  },
-  "home": {
-    "welcome": "Tema Vitesse",
-    "subtitle": "Tema Vitesse para Astro, compatible con Vue y UnoCSS.",
-    "description": "Un tema minimalista y optimizado para SEO para portafolios y blogs en Astro.",
-    "findMeOn": "Encuéntrame en"
-  },
-  "blog": {
-    "title": "Blog",
-    "allPosts": "Todas las publicaciones"
-  },
-  "notFound": {
-    "title": "404 - Página No Encontrada",
-    "description": "Lo sentimos, no pudimos encontrar lo que buscabas.",
-    "returnHome": "Volver al Inicio"
-  }
-}
-
-## 文件：src/i18n/translations/fr.json
-{
-  "common": {
-    "readMore": "Lire la suite →",
-    "backToBlog": "← Retour au blog",
-    "availableIn": "Disponible dans d'autres langues",
-    "recentPosts": "Articles Récents",
-    "language": "Langue",
-    "noPosts": "Aucun article de blog pour le moment.",
-    "lastUpdated": "Dernière mise à jour",
-    "by": "par",
-    "on": "le",
-    "minRead": "min de lecture",
-    "categories": "Catégories"
-  },
-  "home": {
-    "welcome": "Thème Vitesse",
-    "subtitle": "Thème Vitesse pour Astro, compatible avec Vue et UnoCSS.",
-    "description": "Un thème minimaliste et optimisé pour le SEO pour les portfolios et blogs Astro.",
-    "findMeOn": "Trouvez-moi sur"
-  },
-  "blog": {
-    "title": "Blog",
-    "allPosts": "Tous les articles"
-  },
-  "notFound": {
-    "title": "404 - Page Non Trouvée",
-    "description": "Désolé, nous n'avons pas trouvé ce que vous cherchiez.",
-    "returnHome": "Retour à l'accueil"
-  }
-}
-
 ## 文件：src/layouts/BaseLayout.astro
 ---
 import { fade } from 'astro:transitions';
@@ -3588,57 +3906,45 @@ import BaseHead from '@/components/BaseHead.astro';
 import Header from '@/components/Header.astro';
 import Footer from '@/components/Footer.vue';
 import ScrollToTop from '@/components/ScrollToTop.vue';
-import type { Locale } from '@/types';
+import type { Locale, FooterData } from '@/types';
+import { getSingleContent } from '@/lib/content-cache';
+import { defaultFooter } from '@/lib/footer-default';
 
 interface Props {
   title?: string;
   description?: string;
   pageType?: 'article' | 'website';
   locale?: Locale;
-  image?: {
-    src: string;
-    alt: string;
-  };
+  image?: { src: string; alt: string };
 }
 
-const {
-  title,
-  description,
-  pageType = 'website',
-  locale,
-  image,
-} = Astro.props;
-
+const { title, description, pageType = 'website', locale, image } = Astro.props;
 const currentLocale = (Astro.currentLocale || locale || 'en') as Locale;
 const currentUrl = Astro.url;
+
+const cachedFooter = getSingleContent<FooterData>('footer', currentLocale);
+const isValid = cachedFooter?.data && cachedFooter.__meta?.status === 'ok';
+const footerData = isValid ? cachedFooter.data : defaultFooter;
+
+if (!isValid) {
+  console.warn(`[Footer] Invalid or missing cache for locale "${currentLocale}", using default fallback.`);
+}
 ---
 
 <!doctype html>
 <html lang={currentLocale}>
   <head>
-    <BaseHead
-      title={title}
-      description={description}
-      pageType={pageType}
-      locale={currentLocale}
-      url={currentUrl}
-      image={image}
-    />
+    <BaseHead title={title} description={description} pageType={pageType} locale={currentLocale} url={currentUrl} image={image} />
     <ViewTransitions />
   </head>
   <body class="bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 min-h-screen font-sans antialiased transition-colors duration-300">
     <Header currentLocale={currentLocale} />
-
-    <main
-      class="min-h-screen pt-20 pb-16"
-      transition:animate={fade({ duration: '0.4s' })}
-    >
+    <main class="min-h-screen pt-20 pb-16" transition:animate={fade({ duration: '0.4s' })}>
       <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <slot />
       </div>
     </main>
-
-    <Footer client:load />
+    <Footer footer={footerData} />
     <ScrollToTop client:load />
   </body>
 </html>
@@ -3652,68 +3958,75 @@ import type { ContentCache } from '@/generated/content-cache';
 
 const CACHE_DIR = path.join(process.cwd(), 'src/generated/cache');
 
-/**
- * 内存缓存结构：
- * - dataMap: 存储原始对象（以 documentId 为键）
- * - slugIndex: 按语言存储 slug 到 documentId 的映射（用于快速按 slug 查找）
- */
-interface CacheEntry<T = any> {
-  dataMap: Record<string, T>;
-  slugIndex: Map<string, string>; // slug -> documentId
+// 导出常量，用于 Single Type 缓存键
+export const SINGLE_TYPE_CACHE_KEY = 'single' as const;
+
+export interface CachedItem<T = any> {
+  data: T | null;
+  __meta: {
+    status: 'ok' | 'empty' | 'error';
+    fetchedAt: number;
+  };
 }
 
-// 内存缓存，避免重复读盘
+interface CacheEntry<T = any> {
+  dataMap: Record<string, T | CachedItem<T>>;
+  slugIndex: Map<string, string>;
+  mtime: number;
+}
+
 const memoryCache: Partial<Record<string, CacheEntry>> = {};
 
-/**
- * 加载指定类型和语言的数据，并构建索引
- */
 function loadTypeLocale<K extends keyof ContentCache>(type: K, locale: Locale): CacheEntry<ContentCache[K][string]> {
   const cacheKey = `${String(type)}-${locale}`;
-  if (memoryCache[cacheKey]) {
-    return memoryCache[cacheKey]!;
-  }
-
   const filePath = path.join(CACHE_DIR, String(type), `${locale}.json`);
+
   if (!fs.existsSync(filePath)) {
     console.warn(`[cache] Cache file not found: ${filePath}, returning empty map.`);
-    const empty: CacheEntry = { dataMap: {}, slugIndex: new Map() };
+    const empty: CacheEntry = { dataMap: {}, slugIndex: new Map(), mtime: 0 };
     memoryCache[cacheKey] = empty;
     return empty;
   }
 
-  const raw = fs.readFileSync(filePath, 'utf-8');
-  // 缓存文件为对象格式（以 documentId 为键）
-  const dataMap = JSON.parse(raw) as Record<string, ContentCache[K][string]>;
+  const stats = fs.statSync(filePath);
+  const currentMtime = stats.mtimeMs;
 
-  // 构建 slug 索引（仅当条目包含 slug 字段时）
+  if (memoryCache[cacheKey] && memoryCache[cacheKey]!.mtime === currentMtime) {
+    return memoryCache[cacheKey]!;
+  }
+
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  const dataMap = JSON.parse(raw) as Record<string, any>;
+
   const slugIndex = new Map<string, string>();
   for (const [docId, item] of Object.entries(dataMap)) {
-    const slug = (item as any).slug;
+    const actualItem = (item as CachedItem).data ?? item;
+    const slug = actualItem?.slug;
     if (slug && typeof slug === 'string') {
       slugIndex.set(slug, docId);
     }
   }
 
-  const entry: CacheEntry = { dataMap, slugIndex };
+  const entry: CacheEntry = { dataMap, slugIndex, mtime: currentMtime };
   memoryCache[cacheKey] = entry;
   return entry;
 }
 
-/**
- * 获取指定类型和语言的内容列表（数组形式，保持原有接口）
- */
 export function getContentList<T = unknown, K extends keyof ContentCache = keyof ContentCache>(
   contentType: K,
   locale: Locale
 ): T[] {
   const entry = loadTypeLocale(contentType, locale);
-  return Object.values(entry.dataMap) as T[];
+  const items: T[] = [];
+  for (const value of Object.values(entry.dataMap)) {
+    const actual = (value as CachedItem).data ?? value;
+    if (actual !== null && actual !== undefined) {
+      items.push(actual as T);
+    }
+  }
+  return items;
 }
 
-/**
- * 根据 slug 获取单个内容（O(1) 查找）
- */
 export function getContentBySlug<T extends { slug?: string }, K extends keyof ContentCache = keyof ContentCache>(
   contentType: K,
   slug: string,
@@ -3722,28 +4035,29 @@ export function getContentBySlug<T extends { slug?: string }, K extends keyof Co
   const entry = loadTypeLocale(contentType, locale);
   const docId = entry.slugIndex.get(slug);
   if (!docId) {
-    // 降级遍历（以防索引未命中或 slug 不存在）
-    const found = Object.values(entry.dataMap).find(item => (item as any).slug === slug);
-    return (found as T) || null;
+    for (const value of Object.values(entry.dataMap)) {
+      const actual = (value as CachedItem).data ?? value;
+      if (actual?.slug === slug) return actual as T;
+    }
+    return null;
   }
-  return entry.dataMap[docId] as T;
+  const value = entry.dataMap[docId];
+  const actual = (value as CachedItem).data ?? value;
+  return (actual as T) || null;
 }
 
-/**
- * 根据 documentId 直接获取内容（新增方法，方便增量更新使用）
- */
 export function getContentById<T = unknown, K extends keyof ContentCache = keyof ContentCache>(
   contentType: K,
   documentId: string,
   locale: Locale
 ): T | null {
   const entry = loadTypeLocale(contentType, locale);
-  return entry.dataMap[documentId] as T || null;
+  const value = entry.dataMap[documentId];
+  if (!value) return null;
+  const actual = (value as CachedItem).data ?? value;
+  return actual as T;
 }
 
-/**
- * 获取指定类型的所有语言内容（保持原有接口，返回 Record<Locale, T[]>）
- */
 export function getAllContent<T = unknown, K extends keyof ContentCache = keyof ContentCache>(
   contentType: K
 ): Record<Locale, T[]> {
@@ -3762,14 +4076,43 @@ export function getAllContent<T = unknown, K extends keyof ContentCache = keyof 
     const filePath = path.join(typeDir, file);
     try {
       const raw = fs.readFileSync(filePath, 'utf-8');
-      const dataMap = JSON.parse(raw) as Record<string, T>;
-      result[locale] = Object.values(dataMap);
+      const dataMap = JSON.parse(raw) as Record<string, any>;
+      const items: T[] = [];
+      for (const value of Object.values(dataMap)) {
+        const actual = (value as CachedItem).data ?? value;
+        if (actual !== null && actual !== undefined) items.push(actual as T);
+      }
+      result[locale] = items;
     } catch (err) {
       console.warn(`[cache] Failed to read ${filePath}:`, err);
     }
   }
 
   return result as Record<Locale, T[]>;
+}
+
+export function getSingleContent<T = unknown, K extends keyof ContentCache = keyof ContentCache>(
+  contentType: K,
+  locale: Locale
+): CachedItem<T> | null {
+  const filePath = path.join(CACHE_DIR, String(contentType), `${locale}.json`);
+  if (!fs.existsSync(filePath)) {
+    console.warn(`[cache] Single type cache file not found: ${filePath}`);
+    return null;
+  }
+
+  const entry = loadTypeLocale(contentType, locale);
+  const cached = entry.dataMap[SINGLE_TYPE_CACHE_KEY] as CachedItem<T> | undefined;
+  if (!cached) {
+    // 兼容旧格式
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const dataMap = JSON.parse(raw) as Record<string, any>;
+    if (dataMap[SINGLE_TYPE_CACHE_KEY] === undefined) {
+      return { data: dataMap as T, __meta: { status: 'ok', fetchedAt: Date.now() } };
+    }
+    return null;
+  }
+  return cached;
 }
 
 ## 文件：src/lib/env.ts
@@ -3849,6 +4192,34 @@ export function getStrapiGraphQLEndpoint(): string {
 }
 
 ## 文件：src/lib/footer-default.ts
+// src/lib/footer-default.ts
+import type { FooterData, StrapiBlock } from '@/types';
+
+const defaultCopyrightBlocks: StrapiBlock[] = [
+  {
+    type: 'paragraph',
+    children: [{ type: 'text', text: '© 2025 Your Company. All rights reserved.' }]
+  }
+];
+
+export const defaultFooter: FooterData = {
+  product_categories: [{ label: 'Products', url: '/products', target: '_self' }],
+  right_groups: [
+    {
+      group_title: 'About',
+      links: [
+        { label: 'Company', url: '/about', target: '_self' },
+        { label: 'Contact', url: '/contact', target: '_self' },
+      ]
+    }
+  ],
+  certifications: [],
+  footer_links: [
+    { label: 'Privacy Policy', url: '/privacy', target: '_self' },
+    { label: 'Terms of Service', url: '/terms', target: '_self' },
+  ],
+  copyright: defaultCopyrightBlocks,
+};
 
 ## 文件：src/lib/menu.ts
 // src/lib/menu.ts
@@ -4580,101 +4951,34 @@ export const siteConfig = {
   title: 'Test Web',
   subtitle: 'Astro + Strapi + Graphql Website.',
   description: 'A Minimal, SEO-friendly portfolio and blog Astro Website.',
-  image: {
-    src: '/hero.jpg',
-    alt: 'Website Main Image',
-  },
+  image: { src: '/hero.jpg', alt: 'Website Main Image' },
   email: 'sample@gmail.com',
   socialLinks: [
-    {
-      text: 'GitHub',
-      href: 'https://github.com/kieranwv/astro-theme-vitesse',
-      icon: 'i-simple-icons-github',
-      header: 'i-ri-github-line',
-    },
-    {
-      text: 'Twitter',
-      href: '',
-      icon: 'i-simple-icons-x',
-      header: 'i-ri-twitter-x-line',
-    },
-    {
-      text: 'Linkedin',
-      href: '',
-      icon: 'i-simple-icons-linkedin',
-    },
-    {
-      text: 'Instagram',
-      href: '',
-      icon: 'i-simple-icons-instagram',
-    },
-    {
-      text: 'Youtube',
-      href: '',
-      icon: 'i-simple-icons-youtube',
-    },
+    { text: 'GitHub', href: 'https://github.com/kieranwv/astro-theme-vitesse', icon: 'i-simple-icons-github', header: 'i-ri-github-line' },
+    { text: 'Twitter', href: '', icon: 'i-simple-icons-x', header: 'i-ri-twitter-x-line' },
+    { text: 'Linkedin', href: '', icon: 'i-simple-icons-linkedin' },
+    { text: 'Instagram', href: '', icon: 'i-simple-icons-instagram' },
+    { text: 'Youtube', href: '', icon: 'i-simple-icons-youtube' },
   ],
-  header: {
-    logo: {
-      src: '/favicon.svg',
-      alt: 'Logo Image',
-    },
-    navLinks: [],
-  },
-  footer: {
-    navLinks: [
-      {
-        text: 'Posts Props',
-        href: '/posts-props',
-      },
-      {
-        text: 'Markdown Style',
-        href: '/md-style',
-      },
-      {
-        text: 'View on Astro',
-        href: 'https://astro.build/themes/details/vitesse-theme-for-astro/',
-      },
-      {
-        text: 'GitHub Repository',
-        href: 'https://github.com/kieranwv/astro-theme-vitesse',
-      },
-    ],
-  },
-}
+  header: { logo: { src: '/favicon.svg', alt: 'Logo Image' }, navLinks: [] },
+  // footer 已迁移至 Strapi 管理，不再在此定义
+};
 
-export default siteConfig
+export default siteConfig;
 
 ## 文件：src/types.ts
-// src/types.ts - 优化版本：为 Strapi Blocks 定义具体类型
-
+// src/types.ts
 import type { Locale } from '@/generated/i18n-config';
 
-// 重新导出Locale
 export type { Locale };
-
-// 定义语言代码类型
 export type I18NLocaleCode = 'en' | 'es' | 'fr' | string;
 
-// Strapi v5 响应格式
 export interface StrapiResponse<T> {
-  data: Array<{
-    id: string;
-    attributes: T;
-  }>;
-  meta?: {
-    pagination?: {
-      page: number;
-      pageSize: number;
-      pageCount: number;
-      total: number;
-    };
-  };
+  data: Array<{ id: string; attributes: T }>;
+  meta?: { pagination?: { page: number; pageSize: number; pageCount: number; total: number } };
 }
 
 // ========== Strapi Blocks 类型定义 ==========
-
-// 基础文本节点（用于 children 数组）
 export interface StrapiTextNode {
   type: 'text';
   text: string;
@@ -4685,71 +4989,55 @@ export interface StrapiTextNode {
   code?: boolean;
 }
 
-// 链接节点（也可以作为 children 出现）
 export interface StrapiLinkNode {
   type: 'link';
   url: string;
-  children: Array<StrapiTextNode | StrapiLinkNode>; // 链接内可能还有文本或其他
+  children: Array<StrapiTextNode | StrapiLinkNode>;
 }
 
-// 段落 Block
 export interface StrapiParagraphBlock {
   type: 'paragraph';
   children: Array<StrapiTextNode | StrapiLinkNode>;
 }
 
-// 标题 Block
 export interface StrapiHeadingBlock {
   type: 'heading';
   level: 1 | 2 | 3 | 4 | 5 | 6;
   children: Array<StrapiTextNode | StrapiLinkNode>;
 }
 
-// 列表 Block（无序或有序）
 export interface StrapiListBlock {
   type: 'list';
   format: 'unordered' | 'ordered';
-  children: Array<StrapiListItemBlock>; // 列表项
+  children: Array<StrapiListItemBlock>;
 }
 
-// 列表项 Block（通常内部包含段落或其他）
 export interface StrapiListItemBlock {
   type: 'list-item';
   children: Array<StrapiParagraphBlock | StrapiTextNode | StrapiLinkNode>;
 }
 
-// 引用 Block
 export interface StrapiQuoteBlock {
   type: 'quote';
   children: Array<StrapiParagraphBlock>;
 }
 
-// 代码 Block
 export interface StrapiCodeBlock {
   type: 'code';
-  language?: string; // 可能包含语言标识
+  language?: string;
   children: Array<{ type: 'text'; text: string }>;
 }
 
-// 图片 Block
 export interface StrapiImageBlock {
   type: 'image';
-  image: {
-    url: string;
-    alternativeText?: string;
-    caption?: string;
-    width?: number;
-    height?: number;
-  };
+  image: { url: string; alternativeText?: string; caption?: string; width?: number; height?: number };
 }
 
-// 未知 Block（用于扩展性）
 export interface StrapiUnknownBlock {
   type: string;
   [key: string]: unknown;
 }
 
-// 所有可能 Block 的联合类型
 export type StrapiBlock =
   | StrapiParagraphBlock
   | StrapiHeadingBlock
@@ -4758,104 +5046,79 @@ export type StrapiBlock =
   | StrapiQuoteBlock
   | StrapiCodeBlock
   | StrapiImageBlock
-  | StrapiUnknownBlock; // 兜底
+  | StrapiUnknownBlock;
 
 // ========== 内容类型定义 ==========
-
-// Strapi 博客类型 (扁平化格式，与 graphql-types 生成的类型保持一致)
 export interface StrapiBlog {
   documentId: string;
   slug: string;
   title: string;
   author: string;
-  content: StrapiBlock[];      // 替换 any[] 为具体类型
+  content: StrapiBlock[];
   locale: string;
   publishedAt: string;
   createdAt: string;
   updatedAt: string;
-  cover?: {
-    url: string;
-    alternativeText?: string;
-  };
-  // 其他可能字段
-  excerpt?: string;            // 可选摘要
-  localizations?: Array<{
-    documentId: string;
-    slug: string;
-    locale: string;
-    title: string;
-  }>;
+  cover?: { url: string; alternativeText?: string };
+  excerpt?: string;
+  localizations?: Array<{ documentId: string; slug: string; locale: string; title: string }>;
 }
 
-// 站点配置类型（保持不变）
 export interface SiteConfig {
   author: string;
   title: string;
   subtitle: string;
   description: string;
-  image: {
-    src: string;
-    alt: string;
-  };
+  image: { src: string; alt: string };
   email: string;
-  socialLinks: Array<{
-    text: string;
-    href: string;
-    icon: string;
-    header?: string | boolean;
-  }>;
-  header: {
-    logo: {
-      src: string;
-      alt: string;
-    };
-    navLinks: Array<{
-      text: string;
-      href: string;
-    }>;
-  };
-  page: {
-    blogLinks: Array<{
-      text: string;
-      href: string;
-    }>;
-  };
-  footer: {
-    navLinks: Array<{
-      text: string;
-      href: string;
-    }>;
-  };
+  socialLinks: Array<{ text: string; href: string; icon: string; header?: string | boolean }>;
+  header: { logo: { src: string; alt: string }; navLinks: Array<{ text: string; href: string }> };
+  page: { blogLinks: Array<{ text: string; href: string }> };
+  footer: { navLinks: Array<{ text: string; href: string }> };
 }
 
-// 页面Props类型
 export interface PageProps {
   locale?: Locale;
   title?: string;
   description?: string;
 }
 
-// 博客列表Props
 export interface BlogListProps {
   blogs: StrapiBlog[];
   currentPage?: number;
   totalPages?: number;
 }
 
-// 扩展的博客类型（已包含 excerpt，故无需额外扩展）
 export type ExtendedStrapiBlog = StrapiBlog;
-
-// 通用的动态查询结果类型
 export interface DynamicQueryResult<T = Record<string, any>> {
   data: T;
-  meta?: {
-    pagination?: {
-      page: number;
-      pageSize: number;
-      pageCount: number;
-      total: number;
-    };
-  };
+  meta?: { pagination?: { page: number; pageSize: number; pageCount: number; total: number } };
+}
+
+// ========== Footer 相关类型 ==========
+export interface FooterLinkItem {
+  label: string;
+  url: string;
+  target?: string | null;
+}
+
+export interface FooterLinkGroup {
+  group_title: string;
+  links: FooterLinkItem[];
+}
+
+export interface FooterIconLink {
+  icon: Array<{ url: string; alternativeText?: string | null }>;
+  label: string;
+  url: string;
+}
+
+export interface FooterData {
+  product_categories: FooterLinkItem[];
+  right_groups: FooterLinkGroup[];
+  certifications: FooterIconLink[];
+  footer_links: FooterLinkItem[];
+  copyright?: StrapiBlock[] | string | null;
 }
 
 ## 文件：tsconfig.json
@@ -4903,6 +5166,7 @@ export default defineConfig({
       'text-main': 'text-hex-555555 dark:text-hex-bbbbbb',
       'text-link': 'text-dark dark:text-white ',
       'border-main': 'border-truegray-300 dark:border-truegray-600',
+      'op-70': 'opacity-70',  // 新增
     },
     {
       'text-title': 'text-link text-4xl font-800',
@@ -4955,523 +5219,200 @@ import { spawn } from 'node:child_process';
 import dotenv from 'dotenv';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import fs from 'node:fs';
+import { updateCacheEntry } from './scripts/update-cache-entry.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '.env') });
 
-const DEBOUNCE_MS    = parseInt(process.env.WEBHOOK_DEBOUNCE_MS      || '5000',    10);
-const MAX_WAIT_MS    = parseInt(process.env.WEBHOOK_MAX_WAIT_MS       || '60000',   10);
-const MAX_BODY_SIZE  = parseInt(process.env.WEBHOOK_MAX_BODY_SIZE     || '10485760', 10); // 10 MB
-const REQ_TIMEOUT_MS = parseInt(process.env.WEBHOOK_REQUEST_TIMEOUT_MS || '30000',  10); // 30 s
-const PROJECT_ROOT   = '/home/astro-vitesse-site';
+const DEBOUNCE_MS = parseInt(process.env.WEBHOOK_DEBOUNCE_MS || '5000', 10);
+const MAX_WAIT_MS = parseInt(process.env.WEBHOOK_MAX_WAIT_MS || '60000', 10);
+const MAX_BODY_SIZE = parseInt(process.env.WEBHOOK_MAX_BODY_SIZE || '10485760', 10);
+const REQ_TIMEOUT_MS = parseInt(process.env.WEBHOOK_REQUEST_TIMEOUT_MS || '30000', 10);
+const PROJECT_ROOT = '/home/astro-vitesse-site';
 
-// 事件优先级：数字越大优先级越高
-const ACTION_PRIORITY = {
-  delete:    5,
-  unpublish: 4,
-  publish:   3,
-  update:    2,
-  create:    1,
-};
-
-// 存储去重后的事件，键为 `${model}:${id}`
+const ACTION_PRIORITY = { delete: 5, unpublish: 4, publish: 3, update: 2, create: 1 };
 const eventMap = new Map();
+const state = { debounceTimer: null, maxWaitTimer: null, firstEventTime: null, maxWaitExpired: false, processing: false, currentBatch: null, shuttingDown: false };
 
-// ─────────────────────────────────────────────────────────────
-// 全局调度状态（集中管理，避免散落变量）
-// ─────────────────────────────────────────────────────────────
-const state = {
-  debounceTimer:  null,   // 防抖定时器句柄
-  maxWaitTimer:   null,   // 最大等待定时器句柄
-  firstEventTime: null,   // 当前批次首个事件的入队时间戳（null = 无待处理批次）
-  maxWaitExpired: false,  // maxWaitTimer 是否已到期但因 processing 被推迟
-  processing:     false,  // 是否有批次正在执行（更新缓存 + 构建）
-  currentBatch:   null,   // 正在处理的批次快照（用于优雅关闭日志）
-  shuttingDown:   false,  // 是否正在优雅关闭
-};
+let cachedLocales = null, lastLoadedAt = 0;
+const LOCALES_TTL = 60000;
+async function loadLocales() {
+  try {
+    const configPath = path.join(PROJECT_ROOT, 'src/generated/i18n-config.js');
+    const module = await import(`file://${configPath}`);
+    const locales = module.locales;
+    if (Array.isArray(locales) && locales.length) return locales;
+    throw new Error('locales not found');
+  } catch (err) {
+    console.warn('[webhook] Failed to load i18n-config, using fallback locales:', err.message);
+    return ['en', 'es', 'fr'];
+  }
+}
+async function ensureLocales() {
+  const now = Date.now();
+  if (!cachedLocales || now - lastLoadedAt > LOCALES_TTL) {
+    cachedLocales = await loadLocales();
+    lastLoadedAt = now;
+  }
+  return cachedLocales;
+}
+ensureLocales().catch(console.error);
 
-// ─────────────────────────────────────────────────────────────
-// 调度层
-// ─────────────────────────────────────────────────────────────
+let footerDebounceTimer = null;
+const FOOTER_DEBOUNCE_MS = 1000;
+function triggerFooterBuild() {
+  if (footerDebounceTimer) clearTimeout(footerDebounceTimer);
+  footerDebounceTimer = setTimeout(() => {
+    console.log('[webhook] Footer debounce completed, triggering build');
+    scheduleProcess(true);
+    footerDebounceTimer = null;
+  }, FOOTER_DEBOUNCE_MS);
+}
 
-/**
- * 清除所有调度定时器并重置批次起始状态。
- * 仅在 processQueue() 真正开始处理一批事件时调用。
- */
 function clearScheduleTimers() {
-  if (state.debounceTimer) {
-    clearTimeout(state.debounceTimer);
-    state.debounceTimer = null;
-  }
-  if (state.maxWaitTimer) {
-    clearTimeout(state.maxWaitTimer);
-    state.maxWaitTimer = null;
-  }
+  if (state.debounceTimer) clearTimeout(state.debounceTimer);
+  if (state.maxWaitTimer) clearTimeout(state.maxWaitTimer);
+  state.debounceTimer = state.maxWaitTimer = null;
   state.firstEventTime = null;
   state.maxWaitExpired = false;
 }
 
-/**
- * 统一调度入口。
- *
- * 两层保护机制：
- *   1. debounceTimer  — 每次入队事件都重置，平静 DEBOUNCE_MS 后触发处理
- *   2. maxWaitTimer   — 首个事件入队后启动，MAX_WAIT_MS 后强制触发（兜底）
- *
- * @param {boolean} immediate
- *   true  = 跳过防抖，立即（setImmediate）触发处理；用于构建结束后处理积压事件
- *   false = 正常防抖模式；用于 enqueue() 入队新事件后
- */
 function scheduleProcess(immediate = false) {
-  if (state.shuttingDown)    return;
-  if (eventMap.size === 0)   return;
-
-  // ── 清除旧的防抖定时器（每次调用都需要） ──────────────────
-  if (state.debounceTimer) {
-    clearTimeout(state.debounceTimer);
-    state.debounceTimer = null;
+  if (state.shuttingDown) return;
+  if (eventMap.size === 0) return;
+  if (eventMap.size > 1000) {
+    console.warn('[webhook] Event map size > 1000, forcing immediate flush');
+    immediate = true;
   }
-
-  // ── 立即调度（积压事件处理，跳过防抖和 maxWait 重建） ──────
-  if (immediate) {
-    // 重置 maxWait 状态，为下一个新批次做准备
-    // （积压事件将在 processQueue 中消费，clearScheduleTimers 会完整重置）
-    setImmediate(() => processQueue());
-    return;
-  }
-
-  // ── maxWait 已到期（被 processing 推迟）：立即处理 ─────────
-  if (state.maxWaitExpired) {
-    setImmediate(() => processQueue());
-    return;
-  }
-
-  // ── 首个事件：启动 maxWait 兜底定时器 ─────────────────────
+  if (state.debounceTimer) clearTimeout(state.debounceTimer);
+  state.debounceTimer = null;
+  if (immediate) { setImmediate(() => processQueue()); return; }
+  if (state.maxWaitExpired) { setImmediate(() => processQueue()); return; }
   if (state.firstEventTime === null) {
     state.firstEventTime = Date.now();
-
     state.maxWaitTimer = setTimeout(() => {
       state.maxWaitTimer = null;
-
-      if (!state.processing) {
-        // 当前无批次处理，直接强制触发
-        console.log('[webhook] Max wait time reached, forcing batch processing');
-        processQueue();
-      } else {
-        // 正在处理中，标记到期；构建完成后由 onBatchFinished 立即处理积压
-        console.log('[webhook] Max wait time reached but processing in progress, will process after current batch');
-        state.maxWaitExpired = true;
-      }
+      if (!state.processing) processQueue();
+      else state.maxWaitExpired = true;
     }, MAX_WAIT_MS);
   }
-
-  // ── 计算实际防抖延迟（不超过剩余 maxWait 时间） ───────────
-  const elapsed      = Date.now() - state.firstEventTime;
+  const elapsed = Date.now() - state.firstEventTime;
   const remainingMax = MAX_WAIT_MS - elapsed;
-
-  if (remainingMax <= 0) {
-    // 已超过 maxWait，立即触发
-    setImmediate(() => processQueue());
-    return;
-  }
-
+  if (remainingMax <= 0) { setImmediate(() => processQueue()); return; }
   const actualDelay = Math.min(DEBOUNCE_MS, remainingMax);
-  state.debounceTimer = setTimeout(() => {
-    state.debounceTimer = null;
-    processQueue();
-  }, actualDelay);
+  state.debounceTimer = setTimeout(() => processQueue(), actualDelay);
 }
 
-// ─────────────────────────────────────────────────────────────
-// 队列层
-// ─────────────────────────────────────────────────────────────
+function invalidateSingleTypeCache(model, locale) {
+  const type = model.toLowerCase();
+  const filePath = path.join(PROJECT_ROOT, 'src/generated/cache', type, `${locale}.json`);
+  if (fs.existsSync(filePath)) { fs.unlinkSync(filePath); console.log(`[webhook] Removed Single Type cache: ${filePath}`); return true; }
+  console.warn(`[webhook] Single Type cache not found: ${filePath}`);
+  return false;
+}
 
-/**
- * 将事件入队，按 (model, id) 去重合并：
- *   - locale  : 追加到 Set（delete 事件无 locale，跳过）
- *   - action  : 保留优先级最高的（delete > unpublish > publish > update > create）
- *
- * @param {{ model: string, id: string, locale?: string, action: string }} event
- */
-function enqueue(event) {
-  const key      = `${event.model}:${event.id}`;
+async function enqueue(event) {
+  if (eventMap.size > 1000) scheduleProcess(true);
+  if (event.model === 'footer') {
+    console.log(`[webhook] Single Type "${event.model}" changed, invalidating cache`);
+    const locales = await ensureLocales();
+    locales.forEach(locale => invalidateSingleTypeCache(event.model, locale));
+    triggerFooterBuild();
+    return;
+  }
+  const key = `${event.model}:${event.id}`;
   const existing = eventMap.get(key);
-
   if (existing) {
-    // 合并有效 locale
-    if (event.locale != null) {
-      existing.locales.add(event.locale);
-    }
-
-    // 保留优先级更高的 action
+    if (event.locale != null) existing.locales.add(event.locale);
     const existingPriority = ACTION_PRIORITY[existing.action] ?? 0;
-    const newPriority      = ACTION_PRIORITY[event.action]    ?? 0;
-
-    if (newPriority > existingPriority) {
-      console.log(`[webhook] Priority upgrade: ${key} [${existing.action}] -> [${event.action}]`);
-      existing.action = event.action;
-    }
+    const newPriority = ACTION_PRIORITY[event.action] ?? 0;
+    if (newPriority > existingPriority) existing.action = event.action;
   } else {
     const locales = new Set();
-    if (event.locale != null) {
-      locales.add(event.locale);
-    }
-
-    eventMap.set(key, {
-      model:   event.model,
-      id:      event.id,
-      locales,
-      action:  event.action,
-    });
+    if (event.locale != null) locales.add(event.locale);
+    eventMap.set(key, { model: event.model, id: event.id, locales, action: event.action });
   }
-
   scheduleProcess(false);
 }
 
-// ─────────────────────────────────────────────────────────────
-// 执行层
-// ─────────────────────────────────────────────────────────────
-
-/**
- * 调用外部脚本更新单个条目的缓存（针对一个 locale）。
- *
- * @param {{ model: string, id: string, locale: string|null, action: string }} event
- * @returns {Promise<void>}
- */
-function runUpdate(event) {
-  return new Promise((resolve, reject) => {
-    const { model, id, locale, action } = event;
-
-    const args = [
-      'tsx',
-      'scripts/update-cache-entry.ts',
-      '--model', model,
-      '--id',    id,
-      '--event', action,
-    ];
-    if (locale) args.push('--locale', locale);
-
-    console.log(`[webhook] Updating ${model}/${id} (${action}) locale=${locale ?? 'default'}`);
-
-    const child = spawn('npx', args, {
-      cwd:   PROJECT_ROOT,
-      stdio: 'inherit',
-    });
-
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`Update failed with exit code ${code} for ${model}/${id}`));
-      }
-    });
-
-    child.on('error', reject);
-  });
-}
-
-/**
- * 批次结束后的统一收尾：重置处理状态，并处理积压事件。
- */
-function onBatchFinished() {
-  state.currentBatch = null;
-  state.processing   = false;
-
-  if (!state.shuttingDown && eventMap.size > 0) {
-    console.log(`[webhook] ${eventMap.size} event(s) accumulated during build, processing immediately`);
-    scheduleProcess(true);
-  }
-}
-
-/**
- * 核心处理函数：从 eventMap 取出所有事件 → 串行更新缓存 → 触发增量构建。
- */
 async function processQueue() {
-  if (state.processing)   return;
+  if (state.processing) return;
   if (eventMap.size === 0) return;
-
   state.processing = true;
-
-  // 清除调度定时器并重置批次起始状态
   clearScheduleTimers();
-
-  // 快照并清空当前批次
-  const entries      = Array.from(eventMap.values());
+  const entries = Array.from(eventMap.values());
   state.currentBatch = entries;
   eventMap.clear();
-
   console.log(`[webhook] Processing batch: ${entries.length} document(s)`);
-
   try {
     for (const entry of entries) {
-      // locales 为空时（如 delete 无 locale），传 null；
-      // update-cache-entry.ts 内部应使用 defaultLocale 处理
-      const locales = entry.locales.size > 0
-        ? Array.from(entry.locales)
-        : [null];
-
+      const locales = entry.locales.size > 0 ? Array.from(entry.locales) : [null];
       for (const locale of locales) {
-        await runUpdate({
-          model:  entry.model,
-          id:     entry.id,
-          locale,
-          action: entry.action,
-        });
+        await updateCacheEntry({ model: entry.model, id: entry.id, locale, action: entry.action });
       }
     }
-
     console.log('[webhook] All cache updates completed, starting build...');
-
-    const build = spawn('bash', ['build.sh', '--incremental'], {
-      cwd:   PROJECT_ROOT,
-      stdio: 'inherit',
-    });
-
-    build.on('close', (code) => {
-      if (code === 0) {
-        console.log('[webhook] Build succeeded');
-      } else {
-        console.error(`[webhook] Build failed with exit code ${code}`);
-      }
-      onBatchFinished();
-    });
-
-    build.on('error', (err) => {
-      console.error('[webhook] Build spawn error:', err);
-      onBatchFinished();
-    });
-
-  } catch (err) {
-    console.error('[webhook] Cache update error:', err);
-    onBatchFinished();
-  }
+    const build = spawn('bash', ['build.sh', '--incremental'], { cwd: PROJECT_ROOT, stdio: 'inherit' });
+    build.on('close', (code) => { if (code === 0) console.log('[webhook] Build succeeded'); else console.error(`[webhook] Build failed with exit code ${code}`); onBatchFinished(); });
+    build.on('error', (err) => { console.error('[webhook] Build spawn error:', err); onBatchFinished(); });
+  } catch (err) { console.error('[webhook] Cache update error:', err); onBatchFinished(); }
 }
 
-// ─────────────────────────────────────────────────────────────
-// HTTP 层
-// ─────────────────────────────────────────────────────────────
+function onBatchFinished() { state.currentBatch = null; state.processing = false; if (!state.shuttingDown && eventMap.size > 0) scheduleProcess(true); }
 
-/**
- * 规范化模型名称：优先从 uid 末段提取，否则使用 model 字段。
- * 例：uid = "api::article.article" → "article"
- *
- * @param {string|undefined} model
- * @param {string|undefined} uid
- * @returns {string}
- */
 function normalizeModel(model, uid) {
-  if (uid) {
-    const parts = uid.split('.');
-    return parts[parts.length - 1].toLowerCase();
-  }
+  if (uid) { const parts = uid.split('.'); return parts[parts.length - 1].toLowerCase(); }
   return model?.toLowerCase() ?? '';
 }
 
-/**
- * 处理单个 webhook HTTP 请求。
- *
- * @param {import('node:http').IncomingMessage} req
- * @param {import('node:http').ServerResponse}  res
- */
-function handleWebhook(req, res) {
-  // ── 1. 仅允许 POST ──────────────────────────────────────────
-  if (req.method !== 'POST') {
-    res.writeHead(405, { Allow: 'POST' });
-    return res.end('Method Not Allowed');
-  }
-
-  // ── 2. 请求超时保护 ─────────────────────────────────────────
-  req.setTimeout(REQ_TIMEOUT_MS, () => {
-    console.error('[webhook] Request timeout');
-    if (!res.headersSent) {
-      res.writeHead(408);
-      res.end('Request Timeout');
-    }
-    req.destroy();
-  });
-
-  const bodyChunks = [];
-  let totalLength  = 0;
-  let reqDestroyed = false;  // 标记：req 是否已被主动销毁
-
-  // ── 3. 流式读取，并限制请求体大小 ────────────────────────────
-  req.on('data', (chunk) => {
+async function handleWebhook(req, res) {
+  if (req.method !== 'POST') { res.writeHead(405, { Allow: 'POST' }); return res.end('Method Not Allowed'); }
+  req.setTimeout(REQ_TIMEOUT_MS, () => { console.error('[webhook] Request timeout'); if (!res.headersSent) { res.writeHead(408); res.end('Request Timeout'); } req.destroy(); });
+  const bodyChunks = []; let totalLength = 0, reqDestroyed = false;
+  req.on('data', (chunk) => { if (reqDestroyed) return; totalLength += chunk.length; if (totalLength > MAX_BODY_SIZE) { reqDestroyed = true; console.error(`[webhook] Request body too large: ${totalLength} bytes`); if (!res.headersSent) { res.writeHead(413, { 'Content-Type': 'text/plain' }); res.end('Request Entity Too Large'); } req.destroy(); return; } bodyChunks.push(chunk); });
+  req.on('end', async () => {
     if (reqDestroyed) return;
-
-    totalLength += chunk.length;
-
-    if (totalLength > MAX_BODY_SIZE) {
-      reqDestroyed = true;
-      console.error(`[webhook] Request body too large: ${totalLength} bytes`);
-      if (!res.headersSent) {
-        res.writeHead(413, { 'Content-Type': 'text/plain' });
-        res.end('Request Entity Too Large');
-      }
-      req.destroy();
-      return;
-    }
-
-    bodyChunks.push(chunk);
-  });
-
-  // ── 4. 请求读取完毕：解析并入队 ─────────────────────────────
-  req.on('end', () => {
-    // 若请求已因超限被销毁，end 事件仍可能触发，直接忽略
-    if (reqDestroyed) return;
-
     const rawBody = Buffer.concat(bodyChunks).toString();
-
-    // 4-a. 解析 JSON
     let payload = {};
-    try {
-      payload = rawBody ? JSON.parse(rawBody) : {};
-    } catch (err) {
-      console.error('[webhook] Invalid JSON:', err.message);
-      res.writeHead(400, { 'Content-Type': 'text/plain' });
-      res.end('Invalid JSON');
-      return;
-    }
-
+    try { payload = rawBody ? JSON.parse(rawBody) : {}; } catch (err) { console.error('[webhook] Invalid JSON:', err.message); res.writeHead(400, { 'Content-Type': 'text/plain' }); res.end('Invalid JSON'); return; }
     const { event, uid, model: modelRaw } = payload;
-    // entry 不存在时默认空对象，后续由 !id 兜底
-    const entry = (payload.entry && typeof payload.entry === 'object')
-      ? payload.entry
-      : {};
-
-    // 4-b. 事件合法性校验
-    if (!event || typeof event !== 'string') {
-      res.writeHead(200);
-      return res.end('ignored');
-    }
-
-    const dotIndex = event.indexOf('.');
-    if (dotIndex === -1) {
-      res.writeHead(200);
-      return res.end('ignored');
-    }
-
-    const scope  = event.slice(0, dotIndex);
-    const action = event.slice(dotIndex + 1);
-
-    if (scope !== 'entry') {
-      res.writeHead(200);
-      return res.end('ignored');
-    }
-
-    if (!['create', 'update', 'publish', 'delete', 'unpublish'].includes(action)) {
-      res.writeHead(200);
-      return res.end('ignored');
-    }
-
-    // 4-c. 提取业务字段
-    const model  = normalizeModel(modelRaw, uid);
-    const id     = entry.documentId;
-    const locale = entry.locale;  // delete 事件可能无 locale，属正常情况
-
-    if (!model || !id) {
-      console.log('[webhook] Missing model or documentId, ignoring');
-      res.writeHead(200);
-      return res.end('ignored');
-    }
-
-    // 4-d. 入队
-    enqueue({ model, id, locale, action });
-
+    const entry = (payload.entry && typeof payload.entry === 'object') ? payload.entry : {};
+    if (!event || typeof event !== 'string') { res.writeHead(200); return res.end('ignored'); }
+    const dotIndex = event.indexOf('.'); if (dotIndex === -1) { res.writeHead(200); return res.end('ignored'); }
+    const scope = event.slice(0, dotIndex), action = event.slice(dotIndex + 1);
+    if (scope !== 'entry') { res.writeHead(200); return res.end('ignored'); }
+    if (!['create', 'update', 'publish', 'delete', 'unpublish'].includes(action)) { res.writeHead(200); return res.end('ignored'); }
+    const model = normalizeModel(modelRaw, uid);
+    const id = entry.documentId, locale = entry.locale;
+    if (!model || !id) { console.log('[webhook] Missing model or documentId, ignoring'); res.writeHead(200); return res.end('ignored'); }
+    await enqueue({ model, id, locale, action });
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      status:    'queued',
-      queueSize: eventMap.size,
-    }));
+    res.end(JSON.stringify({ status: 'queued', queueSize: eventMap.size }));
   });
-
-  // ── 5. 请求流错误处理 ──────────────────────────────────────
-  req.on('error', (err) => {
-    // ECONNRESET 是客户端主动断开的常见错误，不必打印完整堆栈
-    if (err.code !== 'ECONNRESET') {
-      console.error('[webhook] Request error:', err.message);
-    }
-    if (!res.headersSent) {
-      res.writeHead(500);
-      res.end('Internal Server Error');
-    }
-  });
+  req.on('error', (err) => { if (err.code !== 'ECONNRESET') console.error('[webhook] Request error:', err.message); if (!res.headersSent) { res.writeHead(500); res.end('Internal Server Error'); } });
 }
-
-// ─────────────────────────────────────────────────────────────
-// 服务启动
-// ─────────────────────────────────────────────────────────────
 
 const server = http.createServer(handleWebhook);
-
-server.on('error', (err) => {
-  console.error('[webhook] Server error:', err);
-});
-
+server.on('error', (err) => console.error('[webhook] Server error:', err));
 const PORT = parseInt(process.env.WEBHOOK_PORT || '3000', 10);
+server.listen(PORT, '0.0.0.0', () => { console.log(`[webhook] Listening on port ${PORT}`); console.log(`[webhook] Debounce: ${DEBOUNCE_MS}ms | Max wait: ${MAX_WAIT_MS}ms`); console.log(`[webhook] Max body: ${MAX_BODY_SIZE}B | Request timeout: ${REQ_TIMEOUT_MS}ms`); });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[webhook] Listening on port ${PORT}`);
-  console.log(`[webhook] Debounce: ${DEBOUNCE_MS}ms | Max wait: ${MAX_WAIT_MS}ms`);
-  console.log(`[webhook] Max body: ${MAX_BODY_SIZE}B | Request timeout: ${REQ_TIMEOUT_MS}ms`);
-});
-
-// ─────────────────────────────────────────────────────────────
-// 优雅关闭
-// ─────────────────────────────────────────────────────────────
-
-/**
- * 优雅关闭：
- *   1. 停止接受新连接
- *   2. 清除所有调度定时器
- *   3. 若有批次正在处理，等待其完成（最多 30 秒）后退出
- *
- * @param {string} signal - 触发关闭的信号名称
- */
 function gracefulShutdown(signal) {
   console.log(`[webhook] Received ${signal}, initiating graceful shutdown...`);
-
   state.shuttingDown = true;
-
-  server.close(() => {
-    console.log('[webhook] HTTP server closed');
-  });
-
-  // 清除所有调度定时器（无需再触发新批次）
+  server.close(() => console.log('[webhook] HTTP server closed'));
   if (state.debounceTimer) clearTimeout(state.debounceTimer);
-  if (state.maxWaitTimer)  clearTimeout(state.maxWaitTimer);
-
-  const doExit = () => {
-    if (eventMap.size > 0) {
-      console.warn(`[webhook] ${eventMap.size} pending event(s) discarded`);
-    }
-    console.log('[webhook] Graceful shutdown completed');
-    process.exit(0);
-  };
-
+  if (state.maxWaitTimer) clearTimeout(state.maxWaitTimer);
+  if (footerDebounceTimer) clearTimeout(footerDebounceTimer);
+  const doExit = () => { if (eventMap.size > 0) console.warn(`[webhook] ${eventMap.size} pending event(s) discarded`); console.log('[webhook] Graceful shutdown completed'); process.exit(0); };
   if (state.processing && state.currentBatch) {
-    console.log(
-      `[webhook] Waiting for current batch (${state.currentBatch.length} document(s)) to complete...`
-    );
-
-    const SHUTDOWN_TIMEOUT_MS = 30_000;
-    const shutdownTimeout = setTimeout(() => {
-      console.error('[webhook] Shutdown timeout exceeded, forcing exit');
-      process.exit(1);
-    }, SHUTDOWN_TIMEOUT_MS);
-
-    // 每 500 ms 轮询一次，等待批次结束
-    const checkInterval = setInterval(() => {
-      if (!state.processing) {
-        clearInterval(checkInterval);
-        clearTimeout(shutdownTimeout);
-        doExit();
-      }
-    }, 500);
-  } else {
-    doExit();
-  }
+    console.log(`[webhook] Waiting for current batch (${state.currentBatch.length} document(s)) to complete...`);
+    const SHUTDOWN_TIMEOUT_MS = 30000;
+    const shutdownTimeout = setTimeout(() => { console.error('[webhook] Shutdown timeout exceeded, forcing exit'); process.exit(1); }, SHUTDOWN_TIMEOUT_MS);
+    const checkInterval = setInterval(() => { if (!state.processing) { clearInterval(checkInterval); clearTimeout(shutdownTimeout); doExit(); } }, 500);
+  } else doExit();
 }
-
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 

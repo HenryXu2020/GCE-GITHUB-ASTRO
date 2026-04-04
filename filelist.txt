@@ -22,9 +22,6 @@ src/components/RichTextRenderer.astro
 src/components/RichTextRenderer.vue
 src/i18n/dict.ts
 src/i18n/utils.ts
-src/i18n/translations/en.json
-src/i18n/translations/es.json
-src/i18n/translations/fr.json
 src/layouts/BaseLayout.astro
 src/lib/content-cache.ts
 src/lib/env.ts

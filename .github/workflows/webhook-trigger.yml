@@ -36,6 +36,9 @@ jobs:
       - name: Generate cache key components
         id: cache-key
         run: |
+          # 确保 src/generated 目录存在，避免写入文件失败
+          mkdir -p src/generated
+          
           CACHE_BRANCH="${GITHUB_REF_NAME//\//-}"
           echo "CACHE_BRANCH=$CACHE_BRANCH" >> $GITHUB_ENV
           SCHEMA_HASH=$(curl -s -f -X POST "${{ secrets.STRAPI_API_URL }}/graphql" \

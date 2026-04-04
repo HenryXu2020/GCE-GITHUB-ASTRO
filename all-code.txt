@@ -118,6 +118,14 @@ jobs:
           else
             echo "✅ i18n-config.ts already exists"
           fi
+      - name: Ensure field config exists
+        run: |
+          if [ ! -f src/generated/field-config.json ]; then
+            echo "⚠️ field-config.json not found, generating from Strapi schema..."
+            npm run analyze-schema
+          else
+            echo "✅ field-config.json already exists"
+          fi
       - name: Process incremental updates
         if: github.event_name == 'repository_dispatch' && env.FORCE_FULL_CACHE != 'true'
         env:
@@ -186,15 +194,17 @@ jobs:
             REMOTE_HASH="${{ env.SCHEMA_HASH }}"
             LOCAL_HASH=$(cat src/generated/schema-hash.txt 2>/dev/null || echo "none")
             if [ -n "$REMOTE_HASH" ] && [ "$REMOTE_HASH" != "$LOCAL_HASH" ]; then
-              echo "Schema changed ($LOCAL_HASH → $REMOTE_HASH), regenerating queries and types"
+              echo "Schema changed ($LOCAL_HASH → $REMOTE_HASH), regenerating field config, queries and types"
+              npm run analyze-schema
               npm run generate-correct-queries
               npm run codegen-dynamic
               echo "$REMOTE_HASH" > src/generated/schema-hash.txt
             else
-              echo "Schema unchanged, skipping query regeneration"
+              echo "Schema unchanged, skipping regeneration"
             fi
           else
-            echo "Full build path, regenerating queries and types"
+            echo "Full build path, regenerating field config, queries and types"
+            npm run analyze-schema
             npm run generate-correct-queries
             npm run codegen-dynamic
           fi

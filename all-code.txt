@@ -57,6 +57,9 @@ jobs:
       - name: Generate cache key components
         id: cache-key
         run: |
+          # 确保 src/generated 目录存在，避免写入文件失败
+          mkdir -p src/generated
+          
           CACHE_BRANCH="${GITHUB_REF_NAME//\//-}"
           echo "CACHE_BRANCH=$CACHE_BRANCH" >> $GITHUB_ENV
           SCHEMA_HASH=$(curl -s -f -X POST "${{ secrets.STRAPI_API_URL }}/graphql" \
@@ -106,6 +109,14 @@ jobs:
               echo "::warning::Cache manifest invalid, will fallback to full build"
               echo "FORCE_FULL_CACHE=true" >> $GITHUB_ENV
             fi
+          fi
+      - name: Ensure i18n config exists
+        run: |
+          if [ ! -f src/generated/i18n-config.ts ]; then
+            echo "⚠️ i18n-config.ts not found, generating from Strapi..."
+            npm run generate-config
+          else
+            echo "✅ i18n-config.ts already exists"
           fi
       - name: Process incremental updates
         if: github.event_name == 'repository_dispatch' && env.FORCE_FULL_CACHE != 'true'

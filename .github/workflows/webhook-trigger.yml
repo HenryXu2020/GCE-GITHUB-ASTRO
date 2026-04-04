@@ -89,6 +89,14 @@ jobs:
               echo "FORCE_FULL_CACHE=true" >> $GITHUB_ENV
             fi
           fi
+      - name: Ensure i18n config exists
+        run: |
+          if [ ! -f src/generated/i18n-config.ts ]; then
+            echo "⚠️ i18n-config.ts not found, generating from Strapi..."
+            npm run generate-config
+          else
+            echo "✅ i18n-config.ts already exists"
+          fi
       - name: Process incremental updates
         if: github.event_name == 'repository_dispatch' && env.FORCE_FULL_CACHE != 'true'
         env:

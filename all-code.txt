@@ -57,9 +57,7 @@ jobs:
       - name: Generate cache key components
         id: cache-key
         run: |
-          # 确保 src/generated 目录存在，避免写入文件失败
           mkdir -p src/generated
-          
           CACHE_BRANCH="${GITHUB_REF_NAME//\//-}"
           echo "CACHE_BRANCH=$CACHE_BRANCH" >> $GITHUB_ENV
           SCHEMA_HASH=$(curl -s -f -X POST "${{ secrets.STRAPI_API_URL }}/graphql" \
@@ -93,6 +91,7 @@ jobs:
           path: |
             src/generated/cache
             src/generated/schema-hash.txt
+            src/generated/graphql-types.ts
           key: ${{ steps.cache-key.outputs.cache_key }}
           restore-keys: |
             ${{ steps.cache-key.outputs.cache_restore_prefix }}
@@ -200,7 +199,13 @@ jobs:
               npm run codegen-dynamic
               echo "$REMOTE_HASH" > src/generated/schema-hash.txt
             else
-              echo "Schema unchanged, skipping regeneration"
+              echo "Schema unchanged, checking if graphql-types.ts exists..."
+              if [ ! -f src/generated/graphql-types.ts ]; then
+                echo "graphql-types.ts missing, generating it now"
+                npm run codegen-dynamic
+              else
+                echo "Schema unchanged and graphql-types.ts exists, skipping regeneration"
+              fi
             fi
           else
             echo "Full build path, regenerating field config, queries and types"
@@ -250,6 +255,7 @@ jobs:
           path: |
             src/generated/cache
             src/generated/schema-hash.txt
+            src/generated/graphql-types.ts
           key: ${{ steps.cache-key.outputs.cache_key }}
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

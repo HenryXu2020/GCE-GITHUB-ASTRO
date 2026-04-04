@@ -3,7 +3,7 @@
  * Generate dynamic GraphQL queries from field-config.json
  * - Supports both Collection Types (with pagination) and Single Types
  * - Handles component list fields (simple object, no inline fragments needed)
- * - **新增：支持组件类型，仅为组件生成标量字段，避免递归**
+ * - **新增：支持组件类型，仅为组件生成标量字段，避免递归，并排除 documentId**
  * - 注：由于环境启用了 GraphQL 扁平化模式，Single Type 直接返回字段，无需 data 包装
  */
 
@@ -38,7 +38,7 @@ function hasDataWrapper(returnType: string): boolean {
 
 /**
  * 递归构建选择集。
- * - 对于组件类型（isComponent = true），只返回标量字段，不处理 relations。
+ * - 对于组件类型（isComponent = true），只返回标量字段，不处理 relations，并排除 documentId。
  * - 对于内容类型，正常处理标量字段和关系字段，并限制递归深度。
  */
 function buildSelection(
@@ -56,9 +56,9 @@ function buildSelection(
 
   const { scalars, relations, isComponent } = typeConfig;
 
-  // 组件类型：只输出标量字段，忽略关系（避免无限循环，且组件通常不包含深层嵌套关系）
+  // 组件类型：只输出标量字段，忽略关系，且排除 documentId
   if (isComponent) {
-    return scalars.map(f => `        ${f}`).join('\n');
+    return scalars.filter(f => f !== 'documentId').map(f => `        ${f}`).join('\n');
   }
 
   // 内容类型：处理标量和关系

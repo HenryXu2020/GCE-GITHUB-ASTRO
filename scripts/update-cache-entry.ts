@@ -42,8 +42,16 @@ function buildSelection(typeName: string, visited = new Set<string>(), depth = 0
   visited.add(typeName);
   const config = fieldConfig[typeName];
   if (!config) return '';
-  const { scalars = [], relations = {} as Record<string, any> } = config;
-  const scalarLines = ['documentId', ...scalars.filter((f: string) => f !== 'documentId')];
+  const { scalars = [], relations = {} as Record<string, any>, isComponent = false } = config;
+  
+  // 组件类型不请求 documentId
+  let scalarLines: string[];
+  if (isComponent) {
+    scalarLines = scalars.filter(f => f !== 'documentId');
+  } else {
+    scalarLines = ['documentId', ...scalars.filter(f => f !== 'documentId')];
+  }
+  
   const relationLines = Object.entries(relations).map(([fieldName, rel]: [string, any]) => {
     if (fieldName === 'localizations') {
       const locConfig = fieldConfig[rel.type];
@@ -66,6 +74,7 @@ function buildSelection(typeName: string, visited = new Set<string>(), depth = 0
     if (!nested.trim()) return '';
     return `\n        ${fieldName} {\n${indent(nested)}\n        }`;
   }).filter(Boolean);
+  
   return [...scalarLines, ...relationLines].join('\n').trim();
 }
 

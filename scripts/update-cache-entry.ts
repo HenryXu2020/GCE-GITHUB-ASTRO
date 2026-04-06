@@ -36,14 +36,25 @@ function indent(block: string, spaces = 8): string {
   return block.split('\n').map(line => line ? pad + line : line).join('\n');
 }
 
+/**
+ * 构建选择集，与 generate-queries-correct.ts 中的逻辑保持一致
+ * 支持媒体类型 UploadFile
+ */
 function buildSelection(typeName: string, visited = new Set<string>(), depth = 0): string {
   if (depth > MAX_DEPTH) return '';
   if (visited.has(typeName)) return '';
   visited.add(typeName);
   const config = fieldConfig[typeName];
   if (!config) return '';
+
+  // 媒体类型：返回固定字段集
+  if (typeName === 'UploadFile' || config.isMedia) {
+    const mediaFields = ['url', 'alternativeText', 'name', 'width', 'height', 'mime', 'size', 'caption', 'formats'];
+    return mediaFields.map(f => `          ${f}`).join('\n');
+  }
+
   const { scalars = [], relations = {} as Record<string, any>, isComponent = false } = config;
-  
+
   // 组件类型不请求 documentId
   let scalarLines: string[];
   if (isComponent) {
@@ -51,7 +62,7 @@ function buildSelection(typeName: string, visited = new Set<string>(), depth = 0
   } else {
     scalarLines = ['documentId', ...scalars.filter(f => f !== 'documentId')];
   }
-  
+
   const relationLines = Object.entries(relations).map(([fieldName, rel]: [string, any]) => {
     if (fieldName === 'localizations') {
       const locConfig = fieldConfig[rel.type];
@@ -74,7 +85,7 @@ function buildSelection(typeName: string, visited = new Set<string>(), depth = 0
     if (!nested.trim()) return '';
     return `\n        ${fieldName} {\n${indent(nested)}\n        }`;
   }).filter(Boolean);
-  
+
   return [...scalarLines, ...relationLines].join('\n').trim();
 }
 

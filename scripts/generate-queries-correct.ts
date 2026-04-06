@@ -4,6 +4,7 @@
  * - Supports both Collection Types (with pagination) and Single Types
  * - Handles component list fields (simple object, no inline fragments needed)
  * - **新增：支持组件类型，仅为组件生成标量字段，避免递归，并排除 documentId**
+ * - **新增：处理 UploadFile 媒体类型，为其生成固定字段集**
  * - 注：由于环境启用了 GraphQL 扁平化模式，Single Type 直接返回字段，无需 data 包装
  */
 
@@ -23,6 +24,7 @@ type ContentTypeConfig = {
   relations: Record<string, RelationConfig | RelationConfig[]>;
   isSingle?: boolean;
   isComponent?: boolean;
+  isMedia?: boolean;      // 新增
 };
 
 type ConfigMap = Record<string, ContentTypeConfig>;
@@ -39,6 +41,7 @@ function hasDataWrapper(returnType: string): boolean {
 /**
  * 递归构建选择集。
  * - 对于组件类型（isComponent = true），只返回标量字段，不处理 relations，并排除 documentId。
+ * - 对于媒体类型（UploadFile 或 isMedia = true），返回预定义的媒体字段。
  * - 对于内容类型，正常处理标量字段和关系字段，并限制递归深度。
  */
 function buildSelection(
@@ -49,6 +52,13 @@ function buildSelection(
 ): string {
   const typeConfig = config[typeName];
   if (!typeConfig) return '';
+
+  // 媒体类型：返回固定的媒体字段集，不继续递归
+  if (typeName === 'UploadFile' || typeConfig.isMedia) {
+    const mediaFields = ['url', 'alternativeText', 'name', 'width', 'height', 'mime', 'size', 'caption', 'formats'];
+    return mediaFields.map(f => `        ${f}`).join('\n');
+  }
+
   if (depth > MAX_DEPTH) return '';
   if (visited.has(typeName)) return '';
 
@@ -130,8 +140,9 @@ function generateQueries(config: ConfigMap): string {
   let output = '';
 
   for (const [typeName, conf] of Object.entries(config)) {
-    // 跳过组件类型，只为内容类型（有 rootField）生成查询
+    // 跳过组件类型和媒体类型，只为内容类型（有 rootField）生成查询
     if (conf.isComponent) continue;
+    if (conf.isMedia) continue;
     if (!conf.rootField) continue;
 
     const { rootField, rootReturnType, args, isSingle } = conf;

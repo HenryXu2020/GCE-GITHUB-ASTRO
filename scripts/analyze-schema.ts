@@ -5,7 +5,8 @@
  * - Prefers plural list fields for collections
  * - Adds system fields that actually exist in the type
  * - Identifies Single Types (isSingle flag)
- * - **识别以 Component 开头的类型作为组件，包含其所有标量字段**
+ * - 识别以 Component 开头的类型作为组件，包含其所有标量字段
+ * - **新增**: 处理 UploadFile 媒体类型，使其作为关系字段被正确缓存
  */
 
 import {
@@ -42,8 +43,8 @@ const FORCE_REFRESH = process.env.FORCE_REFRESH_SCHEMA === 'true';
 const SYSTEM_FIELDS = ['id', 'documentId', 'createdAt', 'updatedAt', 'publishedAt'];
 
 // 需要跳过的系统类型（不记录为内容类型或组件）
+// 注意：移除了 'UploadFile'，使其能够作为关系字段被处理
 const SKIP_SYSTEM_TYPES = [
-  'UploadFile',
   'I18NLocale',
   'ReviewWorkflowsWorkflow',
   'ReviewWorkflowsWorkflowStage',
@@ -78,6 +79,7 @@ type ContentTypeConfig = {
   relations: Record<string, RelationConfig | RelationConfig[]>;
   isSingle?: boolean;
   isComponent?: boolean;
+  isMedia?: boolean;  // 新增：标记媒体类型
 };
 
 type ConfigMap = Record<string, ContentTypeConfig>;
@@ -252,12 +254,12 @@ async function main() {
       const unwrapped = unwrap(f.type);
       if (isScalarType(unwrapped)) scalars.push(fname);
       else if (isObjectType(unwrapped)) {
-        // 如果关系目标是系统类型，跳过（不记录）
-        if (SKIP_SYSTEM_TYPES.includes(unwrapped.name)) continue;
+        // 如果关系目标是系统类型，但 UploadFile 需要保留（作为媒体）
+        if (SKIP_SYSTEM_TYPES.includes(unwrapped.name) && unwrapped.name !== 'UploadFile') continue;
         relations[fname] = { type: unwrapped.name, fields: [] };
       } else if (isInterfaceType(unwrapped) || isUnionType(unwrapped)) {
         const possibleTypes = schema.getPossibleTypes(unwrapped);
-        const componentTypes = possibleTypes.map(t => t.name).filter(name => !SKIP_SYSTEM_TYPES.includes(name));
+        const componentTypes = possibleTypes.map(t => t.name).filter(name => !SKIP_SYSTEM_TYPES.includes(name) || name === 'UploadFile');
         if (componentTypes.length > 0) {
           relations[fname] = componentTypes.map(compType => ({ type: compType, fields: [] }));
           console.log(`    ⚡ Dynamic zone field: ${fname} -> possible types: ${componentTypes.join(', ')}`);
@@ -323,7 +325,7 @@ async function main() {
   for (const typeName of referencedTypeNames) {
     // 跳过已经是内容类型的
     if (config[typeName]) continue;
-    // 跳过系统类型
+    // 跳过系统类型（但 UploadFile 单独处理，不在此处）
     if (SKIP_SYSTEM_TYPES.includes(typeName)) continue;
     // 只处理名称以 'Component' 开头的类型（Strapi 组件命名约定）
     if (!typeName.startsWith('Component')) continue;
@@ -348,11 +350,11 @@ async function main() {
       if (isScalarType(unwrapped)) {
         scalars.push(fname);
       } else if (isObjectType(unwrapped)) {
-        if (SKIP_SYSTEM_TYPES.includes(unwrapped.name)) continue;
+        if (SKIP_SYSTEM_TYPES.includes(unwrapped.name) && unwrapped.name !== 'UploadFile') continue;
         relations[fname] = { type: unwrapped.name, fields: [] };
       } else if (isInterfaceType(unwrapped) || isUnionType(unwrapped)) {
         const possibleTypes = schema.getPossibleTypes(unwrapped);
-        const componentTypes = possibleTypes.map(t => t.name).filter(name => !SKIP_SYSTEM_TYPES.includes(name));
+        const componentTypes = possibleTypes.map(t => t.name).filter(name => !SKIP_SYSTEM_TYPES.includes(name) || name === 'UploadFile');
         if (componentTypes.length > 0) {
           relations[fname] = componentTypes.map(compType => ({ type: compType, fields: [] }));
         }
@@ -366,9 +368,23 @@ async function main() {
     };
   }
 
-  // 合并内容类型和组件配置
-  const finalConfig = { ...config, ...componentConfig };
-  console.log(`\n📊 Total types recorded: ${Object.keys(finalConfig).length} (${Object.keys(config).length} content types + ${Object.keys(componentConfig).length} components)`);
+  // ========== 4. 为 UploadFile 媒体类型生成基础配置 ==========
+  const mediaConfig: ConfigMap = {};
+  if (referencedTypeNames.has('UploadFile') || config['UploadFile'] || componentConfig['UploadFile']) {
+    // 定义常用的媒体字段
+    const mediaScalars = ['url', 'alternativeText', 'name', 'width', 'height', 'mime', 'size', 'caption', 'formats'];
+    mediaConfig['UploadFile'] = {
+      scalars: mediaScalars,
+      relations: {},
+      isMedia: true,      // 自定义标记
+      isComponent: false,
+    };
+    console.log(`\n📸 Added media type configuration for UploadFile`);
+  }
+
+  // 合并内容类型、组件和媒体配置
+  const finalConfig = { ...config, ...componentConfig, ...mediaConfig };
+  console.log(`\n📊 Total types recorded: ${Object.keys(finalConfig).length} (${Object.keys(config).length} content types + ${Object.keys(componentConfig).length} components + ${Object.keys(mediaConfig).length} media types)`);
 
   const outDir = join(process.cwd(), 'src/generated');
   if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });

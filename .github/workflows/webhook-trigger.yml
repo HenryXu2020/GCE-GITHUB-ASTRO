@@ -57,7 +57,8 @@ jobs:
             CONTENT_HASH="empty"
           fi
           echo "CONTENT_HASH=$CONTENT_HASH" >> $GITHUB_ENV
-          FINAL_KEY="${{ runner.os }}-content-${CACHE_BRANCH}-${SCHEMA_HASH:0:12}-${CONTENT_HASH}"
+          # 修改点：在保存缓存时加入 github.run_id 确保唯一性，恢复时使用前缀匹配
+          FINAL_KEY="${{ runner.os }}-content-${CACHE_BRANCH}-${SCHEMA_HASH:0:12}-${CONTENT_HASH}-${{ github.run_id }}"
           RESTORE_PREFIX="${{ runner.os }}-content-${CACHE_BRANCH}-${SCHEMA_HASH:0:12}-"
           echo "cache_key=$FINAL_KEY" >> $GITHUB_OUTPUT
           echo "cache_restore_prefix=$RESTORE_PREFIX" >> $GITHUB_OUTPUT

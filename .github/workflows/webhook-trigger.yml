@@ -79,14 +79,19 @@ jobs:
       - name: Validate cache and fallback
         run: |
           mkdir -p src/generated/cache
+          # 检查缓存清单是否存在且有效
           if [ ! -f src/generated/cache/MANIFEST.json ]; then
             echo "::warning::Cache manifest missing, will fallback to full build"
             echo "FORCE_FULL_CACHE=true" >> $GITHUB_ENV
-          else
-            if ! jq -e '.version' src/generated/cache/MANIFEST.json > /dev/null 2>&1; then
-              echo "::warning::Cache manifest invalid, will fallback to full build"
-              echo "FORCE_FULL_CACHE=true" >> $GITHUB_ENV
-            fi
+          elif ! jq -e '.version' src/generated/cache/MANIFEST.json > /dev/null 2>&1; then
+            echo "::warning::Cache manifest invalid, will fallback to full build"
+            echo "FORCE_FULL_CACHE=true" >> $GITHUB_ENV
+          fi
+          # 新增：检查 global 缓存目录是否至少有一个 JSON 文件
+          GLOBAL_CACHE_DIR="src/generated/cache/global"
+          if [ ! -d "$GLOBAL_CACHE_DIR" ] || [ -z "$(find "$GLOBAL_CACHE_DIR" -maxdepth 1 -name '*.json' -print -quit 2>/dev/null)" ]; then
+            echo "::warning::Global cache directory missing or contains no JSON files, will fallback to full build"
+            echo "FORCE_FULL_CACHE=true" >> $GITHUB_ENV
           fi
       - name: Ensure i18n config exists
         run: |

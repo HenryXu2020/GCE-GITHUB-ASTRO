@@ -1,5 +1,6 @@
 // src/site-config.ts
 import type { Locale } from '@/generated/i18n-config';
+import { defaultLocale } from '@/generated/i18n-config';
 import { getSingleContent } from '@/lib/content-cache';
 import type { Global } from '@/generated/graphql-types';
 import { getFullImageUrl } from '@/lib/env';
@@ -13,16 +14,23 @@ function normalizeSocialLink(link: NonNullable<Global['social_links']>[0]) {
   };
 }
 
-// 该函数已不再使用，保留以备后续可能的需求
-// function normalizeNavLink(link: { label: string; url: string; is_button?: boolean }) {
-//   return { text: link.label, href: link.url };
-// }
-
 export function getSiteConfig(locale: Locale) {
-  const globalData = getSingleContent<Global>('global', locale);
+  // 尝试获取当前语言的配置
+  let globalData = getSingleContent<Global>('global', locale);
+
+  // 如果当前语言没有数据，回退到默认语言
   if (!globalData?.data) {
-    throw new Error(`[site-config] No global data for locale "${locale}".`);
+    console.warn(`[site-config] Global data missing for locale "${locale}", falling back to "${defaultLocale}"`);
+    globalData = getSingleContent<Global>('global', defaultLocale);
   }
+
+  // 若默认语言也没有数据，则无法继续（此时抛出错误是合理的）
+  if (!globalData?.data) {
+    throw new Error(
+      `[site-config] No global data available for locale "${locale}" or default locale "${defaultLocale}".`
+    );
+  }
+
   const data = globalData.data;
 
   return {

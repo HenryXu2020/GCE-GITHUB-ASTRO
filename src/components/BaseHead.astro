@@ -21,20 +21,23 @@ interface Props {
     fb_app_id?: string;
     google_analytics_id?: string;
     umami_website_id?: string;
+    rss_enabled?: boolean; // 添加 RSS 启用标志（由 site-config 提供）
   };
 }
 
 const { title, description, pageType = 'website', locale, url, image, config } = Astro.props;
 const siteUrl = Astro.site?.origin || 'https://example.com';
 const canonicalUrl = new URL(url.pathname, siteUrl).toString();
-const imageUrl = image?.src || config.image.src;
+const fallbackImage = '/default-og.png'; // 静态后备图片，请确保 public 目录下存在该文件
+const imageUrl = image?.src || config.image.src || fallbackImage;
 const alternateUrls = locales.map((targetLocale: Locale) => {
   const localizedUrl = getLocalizedUrl(url, targetLocale);
   const fullUrl = new URL(localizedUrl, siteUrl).toString();
   return { lang: targetLocale, href: fullUrl };
 });
-const themeColorLight = config.theme_color_light || '#ffffff';
-const themeColorDark = config.theme_color_dark || '#0f172a';
+// 使用 ?? 避免空字符串被错误替换
+const themeColorLight = config.theme_color_light ?? '#ffffff';
+const themeColorDark = config.theme_color_dark ?? '#0f172a';
 ---
 
 <head>
@@ -96,7 +99,7 @@ const themeColorDark = config.theme_color_dark || '#0f172a';
   <link rel="alternate icon" href="/favicon.ico" type="image/x-icon" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180" />
 
-  <link rel="alternate" type="application/rss+xml" href="/rss.xml" title={`${config.title} RSS Feed`} />
+  <!-- RSS 链接由 Header 组件根据 config.rss_enabled 条件渲染，此处不再放置 -->
 
   <meta name="theme-color" media="(prefers-color-scheme: light)" content={themeColorLight} />
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content={themeColorDark} />

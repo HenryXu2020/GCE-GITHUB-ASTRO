@@ -63,21 +63,11 @@ const getHref = (url: string) => {
 
         <!-- Desktop Navigation -->
         <nav class="hidden md:flex items-center space-x-2">
-          <!-- 动态菜单将由 Menu 组件处理，这里仅作为占位，实际菜单逻辑可通过 props 传递或自行实现 -->
-          <!-- 为简化，直接使用后备链接（从 config.header.navLinks 读取） -->
-          <template v-if="config.header.navLinks.length">
-            <a
-              v-for="link in config.header.navLinks"
-              :key="link.href"
-              :href="getHref(link.href)"
-              class="text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 transition-colors font-medium px-3 py-2"
-              :aria-label="link.text"
-            >
-              {{ link.text }}
-            </a>
-          </template>
-
-          <!-- 按钮菜单（如果有）可单独处理，此处省略，因为动态菜单需从 Strapi Menu 获取 -->
+          <!-- 动态菜单应通过 Menu 组件渲染，此处因简化版本未集成 Menu，故留空。
+               实际项目中建议统一使用 Header.astro -->
+          <div class="text-gray-400 dark:text-gray-500 text-sm italic px-3">
+            <!-- 菜单由 Header.astro 处理，此 Vue 组件仅为备用 -->
+          </div>
 
           <!-- 语言切换器 + 社交链接 + 主题切换器 -->
           <div class="flex items-center space-x-3 ml-4 pl-4 border-l border-gray-200 dark:border-gray-700">
@@ -111,6 +101,7 @@ const getHref = (url: string) => {
             </a>
 
             <a
+              v-if="config.rss_enabled"
               :href="getAssetPath('/rss.xml')"
               target="_blank"
               class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400 transition-colors"
@@ -163,17 +154,10 @@ const getHref = (url: string) => {
       </div>
 
       <div class="p-4">
-        <nav class="space-y-2 mb-6">
-          <a
-            v-for="link in config.header.navLinks"
-            :key="link.href"
-            :href="getHref(link.href)"
-            class="block text-lg text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 py-3 px-4 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-            data-close-mobile-menu
-          >
-            {{ link.text }}
-          </a>
-        </nav>
+        <!-- 菜单项由 Menu 组件渲染，此处省略，保持与 Header.astro 一致 -->
+        <div class="text-gray-400 dark:text-gray-500 text-sm italic py-3 px-4">
+          Menu (use Header.astro for full menu)
+        </div>
 
         <!-- 语言切换器（移动端） -->
         <div class="mb-6 pt-4 border-t border-gray-200 dark:border-gray-700">
@@ -215,6 +199,7 @@ const getHref = (url: string) => {
             <i :class="`${link.icon} text-xl`"></i>
           </a>
           <a
+            v-if="config.rss_enabled"
             :href="getAssetPath('/rss.xml')"
             target="_blank"
             class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400"
@@ -229,10 +214,6 @@ const getHref = (url: string) => {
     </div>
   </header>
 </template>
-
-<style scoped>
-/* 移动端菜单交互脚本已在 Header.astro 中实现，此处如需可添加，但建议在父组件中处理 */
-</style>
 
 <script lang="ts">
 // 移动端菜单交互逻辑

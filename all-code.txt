@@ -2797,20 +2797,23 @@ interface Props {
     fb_app_id?: string;
     google_analytics_id?: string;
     umami_website_id?: string;
+    rss_enabled?: boolean; // 添加 RSS 启用标志（由 site-config 提供）
   };
 }
 
 const { title, description, pageType = 'website', locale, url, image, config } = Astro.props;
 const siteUrl = Astro.site?.origin || 'https://example.com';
 const canonicalUrl = new URL(url.pathname, siteUrl).toString();
-const imageUrl = image?.src || config.image.src;
+const fallbackImage = '/default-og.png'; // 静态后备图片，请确保 public 目录下存在该文件
+const imageUrl = image?.src || config.image.src || fallbackImage;
 const alternateUrls = locales.map((targetLocale: Locale) => {
   const localizedUrl = getLocalizedUrl(url, targetLocale);
   const fullUrl = new URL(localizedUrl, siteUrl).toString();
   return { lang: targetLocale, href: fullUrl };
 });
-const themeColorLight = config.theme_color_light || '#ffffff';
-const themeColorDark = config.theme_color_dark || '#0f172a';
+// 使用 ?? 避免空字符串被错误替换
+const themeColorLight = config.theme_color_light ?? '#ffffff';
+const themeColorDark = config.theme_color_dark ?? '#0f172a';
 ---
 
 <head>
@@ -2872,7 +2875,7 @@ const themeColorDark = config.theme_color_dark || '#0f172a';
   <link rel="alternate icon" href="/favicon.ico" type="image/x-icon" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180" />
 
-  <link rel="alternate" type="application/rss+xml" href="/rss.xml" title={`${config.title} RSS Feed`} />
+  <!-- RSS 链接由 Header 组件根据 config.rss_enabled 条件渲染，此处不再放置 -->
 
   <meta name="theme-color" media="(prefers-color-scheme: light)" content={themeColorLight} />
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content={themeColorDark} />
@@ -2996,9 +2999,10 @@ interface Props {
     title: string;
     header: {
       logo: { src: string; alt: string };
-      navLinks: Array<{ text: string; href: string }>;
+      // navLinks 字段已弃用，统一使用 Strapi Menu
     };
     socialLinks: Array<{ text: string; href: string; icon: string; header?: string | boolean }>;
+    rss_enabled?: boolean; // 从 site-config 传入
   };
 }
 
@@ -3008,12 +3012,6 @@ const { currentLocale, config } = Astro.props;
 const menuTree = getMenuTree(currentLocale);
 const buttonItems = menuTree.filter(item => item.isButton);
 const navItems = menuTree.filter(item => !item.isButton);
-
-// 后备链接（当动态菜单为空时，使用 global 中定义的 nav_links）
-const fallbackLinks = config.header.navLinks.map(link => ({
-  text: link.text,
-  href: getLocalizedUrl(new URL(link.href, Astro.url.origin), currentLocale),
-}));
 
 const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
                    Astro.url.pathname === `${BASE_URL.replace(/\/$/, '')}/${currentLocale}`;
@@ -3057,18 +3055,8 @@ const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
         {navItems.length > 0 ? (
           <Menu items={navItems} currentLocale={currentLocale} horizontal={true} />
         ) : (
-          <>
-            {fallbackLinks.map((link) => (
-              <a
-                key={link.href}
-                href={link.href}
-                class="text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 transition-colors font-medium px-3 py-2"
-                aria-label={link.text}
-              >
-                {link.text}
-              </a>
-            ))}
-          </>
+          // 当动态菜单为空时显示占位（可根据需要调整）
+          <span class="text-gray-400 dark:text-gray-500 text-sm italic px-3">No menu items</span>
         )}
 
         {buttonItems.map(item => {
@@ -3129,15 +3117,17 @@ const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
             ))
           }
 
-          <a
-            href={getAssetPath('/rss.xml')}
-            target="_blank"
-            class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400 transition-colors"
-            aria-label="RSS Feed"
-            title="RSS Feed"
-          >
-            <i class="i-ri-rss-line text-lg" />
-          </a>
+          {config.rss_enabled && (
+            <a
+              href={getAssetPath('/rss.xml')}
+              target="_blank"
+              class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400 transition-colors"
+              aria-label="RSS Feed"
+              title="RSS Feed"
+            >
+              <i class="i-ri-rss-line text-lg" />
+            </a>
+          )}
 
           <ThemeToggle client:load />
         </div>
@@ -3191,18 +3181,7 @@ const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
       {navItems.length > 0 ? (
         <Menu items={navItems} currentLocale={currentLocale} mobile={true} horizontal={false} />
       ) : (
-        <nav class="space-y-2 mb-6">
-          {fallbackLinks.map((link) => (
-            <a
-              key={link.href}
-              href={link.href}
-              class="block text-lg text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 py-3 px-4 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-              data-close-mobile-menu
-            >
-              {link.text}
-            </a>
-          ))}
-        </nav>
+        <div class="text-gray-400 dark:text-gray-500 text-sm italic py-3 px-4">No menu items</div>
       )}
 
       {buttonItems.length > 0 && (
@@ -3276,16 +3255,18 @@ const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
             </a>
           ))
         }
-        <a
-          href={getAssetPath('/rss.xml')}
-          target="_blank"
-          class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400"
-          aria-label="RSS Feed"
-          title="RSS Feed"
-          data-close-mobile-menu
-        >
-          <i class="i-ri-rss-line text-xl" />
-        </a>
+        {config.rss_enabled && (
+          <a
+            href={getAssetPath('/rss.xml')}
+            target="_blank"
+            class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400"
+            aria-label="RSS Feed"
+            title="RSS Feed"
+            data-close-mobile-menu
+          >
+            <i class="i-ri-rss-line text-xl" />
+          </a>
+        )}
       </div>
     </div>
   </div>
@@ -3394,21 +3375,11 @@ const getHref = (url: string) => {
 
         <!-- Desktop Navigation -->
         <nav class="hidden md:flex items-center space-x-2">
-          <!-- 动态菜单将由 Menu 组件处理，这里仅作为占位，实际菜单逻辑可通过 props 传递或自行实现 -->
-          <!-- 为简化，直接使用后备链接（从 config.header.navLinks 读取） -->
-          <template v-if="config.header.navLinks.length">
-            <a
-              v-for="link in config.header.navLinks"
-              :key="link.href"
-              :href="getHref(link.href)"
-              class="text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 transition-colors font-medium px-3 py-2"
-              :aria-label="link.text"
-            >
-              {{ link.text }}
-            </a>
-          </template>
-
-          <!-- 按钮菜单（如果有）可单独处理，此处省略，因为动态菜单需从 Strapi Menu 获取 -->
+          <!-- 动态菜单应通过 Menu 组件渲染，此处因简化版本未集成 Menu，故留空。
+               实际项目中建议统一使用 Header.astro -->
+          <div class="text-gray-400 dark:text-gray-500 text-sm italic px-3">
+            <!-- 菜单由 Header.astro 处理，此 Vue 组件仅为备用 -->
+          </div>
 
           <!-- 语言切换器 + 社交链接 + 主题切换器 -->
           <div class="flex items-center space-x-3 ml-4 pl-4 border-l border-gray-200 dark:border-gray-700">
@@ -3442,6 +3413,7 @@ const getHref = (url: string) => {
             </a>
 
             <a
+              v-if="config.rss_enabled"
               :href="getAssetPath('/rss.xml')"
               target="_blank"
               class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400 transition-colors"
@@ -3494,17 +3466,10 @@ const getHref = (url: string) => {
       </div>
 
       <div class="p-4">
-        <nav class="space-y-2 mb-6">
-          <a
-            v-for="link in config.header.navLinks"
-            :key="link.href"
-            :href="getHref(link.href)"
-            class="block text-lg text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 py-3 px-4 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-            data-close-mobile-menu
-          >
-            {{ link.text }}
-          </a>
-        </nav>
+        <!-- 菜单项由 Menu 组件渲染，此处省略，保持与 Header.astro 一致 -->
+        <div class="text-gray-400 dark:text-gray-500 text-sm italic py-3 px-4">
+          Menu (use Header.astro for full menu)
+        </div>
 
         <!-- 语言切换器（移动端） -->
         <div class="mb-6 pt-4 border-t border-gray-200 dark:border-gray-700">
@@ -3546,6 +3511,7 @@ const getHref = (url: string) => {
             <i :class="`${link.icon} text-xl`"></i>
           </a>
           <a
+            v-if="config.rss_enabled"
             :href="getAssetPath('/rss.xml')"
             target="_blank"
             class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400"
@@ -3560,10 +3526,6 @@ const getHref = (url: string) => {
     </div>
   </header>
 </template>
-
-<style scoped>
-/* 移动端菜单交互脚本已在 Header.astro 中实现，此处如需可添加，但建议在父组件中处理 */
-</style>
 
 <script lang="ts">
 // 移动端菜单交互逻辑
@@ -4193,11 +4155,11 @@ export function t(locale: Locale, key: string, vars?: Record<string, string>): s
   let value = getValue(locale, keys);
 
   if (value === undefined) {
-    console.warn(`[i18n] Missing key: ${key} in locale: ${locale}`);
-    // 回退到默认语言
+    // 如果当前语言缺失，回退到默认语言
     if (locale !== defaultLocale) {
       return t(defaultLocale, key, vars);
     }
+    console.warn(`[i18n] Missing key: ${key} in default locale`);
     return key;
   }
 
@@ -5314,9 +5276,10 @@ function normalizeSocialLink(link: NonNullable<Global['social_links']>[0]) {
   };
 }
 
-function normalizeNavLink(link: { label: string; url: string; is_button?: boolean }) {
-  return { text: link.label, href: link.url };
-}
+// 该函数已不再使用，保留以备后续可能的需求
+// function normalizeNavLink(link: { label: string; url: string; is_button?: boolean }) {
+//   return { text: link.label, href: link.url };
+// }
 
 export function getSiteConfig(locale: Locale) {
   const globalData = getSingleContent<Global>('global', locale);
@@ -5340,7 +5303,7 @@ export function getSiteConfig(locale: Locale) {
         src: data.header_logo?.url ? getFullImageUrl(data.header_logo.url) : '',
         alt: data.header_logo?.alternativeText || '',
       },
-      navLinks: (data as any).nav_links?.map(normalizeNavLink) || [],
+      // navLinks 已弃用，统一使用 Strapi Menu
     },
     socialLinks: (data.social_links || []).map(normalizeSocialLink),
     // 扩展字段

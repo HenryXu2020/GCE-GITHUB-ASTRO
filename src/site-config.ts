@@ -13,9 +13,10 @@ function normalizeSocialLink(link: NonNullable<Global['social_links']>[0]) {
   };
 }
 
-function normalizeNavLink(link: { label: string; url: string; is_button?: boolean }) {
-  return { text: link.label, href: link.url };
-}
+// 该函数已不再使用，保留以备后续可能的需求
+// function normalizeNavLink(link: { label: string; url: string; is_button?: boolean }) {
+//   return { text: link.label, href: link.url };
+// }
 
 export function getSiteConfig(locale: Locale) {
   const globalData = getSingleContent<Global>('global', locale);
@@ -39,7 +40,7 @@ export function getSiteConfig(locale: Locale) {
         src: data.header_logo?.url ? getFullImageUrl(data.header_logo.url) : '',
         alt: data.header_logo?.alternativeText || '',
       },
-      navLinks: (data as any).nav_links?.map(normalizeNavLink) || [],
+      // navLinks 已弃用，统一使用 Strapi Menu
     },
     socialLinks: (data.social_links || []).map(normalizeSocialLink),
     // 扩展字段

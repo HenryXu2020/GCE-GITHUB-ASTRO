@@ -14,9 +14,10 @@ interface Props {
     title: string;
     header: {
       logo: { src: string; alt: string };
-      navLinks: Array<{ text: string; href: string }>;
+      // navLinks 字段已弃用，统一使用 Strapi Menu
     };
     socialLinks: Array<{ text: string; href: string; icon: string; header?: string | boolean }>;
+    rss_enabled?: boolean; // 从 site-config 传入
   };
 }
 
@@ -26,12 +27,6 @@ const { currentLocale, config } = Astro.props;
 const menuTree = getMenuTree(currentLocale);
 const buttonItems = menuTree.filter(item => item.isButton);
 const navItems = menuTree.filter(item => !item.isButton);
-
-// 后备链接（当动态菜单为空时，使用 global 中定义的 nav_links）
-const fallbackLinks = config.header.navLinks.map(link => ({
-  text: link.text,
-  href: getLocalizedUrl(new URL(link.href, Astro.url.origin), currentLocale),
-}));
 
 const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
                    Astro.url.pathname === `${BASE_URL.replace(/\/$/, '')}/${currentLocale}`;
@@ -75,18 +70,8 @@ const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
         {navItems.length > 0 ? (
           <Menu items={navItems} currentLocale={currentLocale} horizontal={true} />
         ) : (
-          <>
-            {fallbackLinks.map((link) => (
-              <a
-                key={link.href}
-                href={link.href}
-                class="text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 transition-colors font-medium px-3 py-2"
-                aria-label={link.text}
-              >
-                {link.text}
-              </a>
-            ))}
-          </>
+          // 当动态菜单为空时显示占位（可根据需要调整）
+          <span class="text-gray-400 dark:text-gray-500 text-sm italic px-3">No menu items</span>
         )}
 
         {buttonItems.map(item => {
@@ -147,15 +132,17 @@ const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
             ))
           }
 
-          <a
-            href={getAssetPath('/rss.xml')}
-            target="_blank"
-            class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400 transition-colors"
-            aria-label="RSS Feed"
-            title="RSS Feed"
-          >
-            <i class="i-ri-rss-line text-lg" />
-          </a>
+          {config.rss_enabled && (
+            <a
+              href={getAssetPath('/rss.xml')}
+              target="_blank"
+              class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400 transition-colors"
+              aria-label="RSS Feed"
+              title="RSS Feed"
+            >
+              <i class="i-ri-rss-line text-lg" />
+            </a>
+          )}
 
           <ThemeToggle client:load />
         </div>
@@ -209,18 +196,7 @@ const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
       {navItems.length > 0 ? (
         <Menu items={navItems} currentLocale={currentLocale} mobile={true} horizontal={false} />
       ) : (
-        <nav class="space-y-2 mb-6">
-          {fallbackLinks.map((link) => (
-            <a
-              key={link.href}
-              href={link.href}
-              class="block text-lg text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 py-3 px-4 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-              data-close-mobile-menu
-            >
-              {link.text}
-            </a>
-          ))}
-        </nav>
+        <div class="text-gray-400 dark:text-gray-500 text-sm italic py-3 px-4">No menu items</div>
       )}
 
       {buttonItems.length > 0 && (
@@ -294,16 +270,18 @@ const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
             </a>
           ))
         }
-        <a
-          href={getAssetPath('/rss.xml')}
-          target="_blank"
-          class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400"
-          aria-label="RSS Feed"
-          title="RSS Feed"
-          data-close-mobile-menu
-        >
-          <i class="i-ri-rss-line text-xl" />
-        </a>
+        {config.rss_enabled && (
+          <a
+            href={getAssetPath('/rss.xml')}
+            target="_blank"
+            class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400"
+            aria-label="RSS Feed"
+            title="RSS Feed"
+            data-close-mobile-menu
+          >
+            <i class="i-ri-rss-line text-xl" />
+          </a>
+        )}
       </div>
     </div>
   </div>

@@ -63,11 +63,11 @@ export function t(locale: Locale, key: string, vars?: Record<string, string>): s
   let value = getValue(locale, keys);
 
   if (value === undefined) {
-    console.warn(`[i18n] Missing key: ${key} in locale: ${locale}`);
-    // 回退到默认语言
+    // 如果当前语言缺失，回退到默认语言
     if (locale !== defaultLocale) {
       return t(defaultLocale, key, vars);
     }
+    console.warn(`[i18n] Missing key: ${key} in default locale`);
     return key;
   }
 

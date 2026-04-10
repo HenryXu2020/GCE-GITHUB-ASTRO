@@ -18,7 +18,6 @@ scripts/validate-footer-types.ts
 src/components/BaseHead.astro
 src/components/Footer.vue
 src/components/Header.astro
-src/components/Header.vue
 src/components/Menu.astro
 src/components/RichTextRenderer.astro
 src/components/RichTextRenderer.vue

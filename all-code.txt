@@ -277,10 +277,8 @@ import path from 'path';
 
 const { locales, defaultLocale } = getConfig();
 
-// 站点基础 URL，必须与 GitHub Pages 部署地址一致
-const SITE_URL = process.env.SITE_URL || 'https://henryxu2020.github.io/GCE-GITHUB-ASTRO/';
-// 添加 base 路径，对应仓库名
-const BASE_URL = process.env.BASE_URL || '/GCE-GITHUB-ASTRO/';
+// 站点基础 URL，优先使用环境变量，否则使用实际部署域名
+const SITE_URL = process.env.SITE_URL || 'https://astro.lactisoles.com';
 
 // 读取内容缓存，获取所有博客的 slug 用于生成 customPages
 let blogPaths: string[] = [];
@@ -291,12 +289,14 @@ try {
     for (const file of files) {
       if (!file.endsWith('.json')) continue;
       const locale = file.replace(/\.json$/, '');
-      if (!locales.includes(locale)) continue;
+      if (!locales.includes(locale)) continue; // 确保是有效语言
 
       const filePath = path.join(cacheDir, file);
+      // [修复] 缓存文件现在是对象格式（以 documentId 为键），需要转换为数组
       const dataMap = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      const blogs = Object.values(dataMap);
+      const blogs = Object.values(dataMap); // 对象 → 数组
       for (const blog of blogs) {
+        // 增加空值判断，确保 blog 对象存在且包含 slug
         if (blog && typeof blog === 'object' && blog.slug) {
           const relativePath = `/${locale}/blog/${blog.slug}/`;
           const fullUrl = new URL(relativePath, SITE_URL).toString();
@@ -311,9 +311,10 @@ try {
   console.warn('⚠️ Failed to read blog cache for sitemap custom pages:', error);
 }
 
+// 过滤无效的 URL，避免破坏 sitemap
 const validBlogPaths = blogPaths.filter(path => {
   try {
-    new URL(path);
+    new URL(path); // 验证是否为有效 URL
     return true;
   } catch {
     console.warn(`⚠️ Invalid sitemap path: ${path}`);
@@ -321,13 +322,16 @@ const validBlogPaths = blogPaths.filter(path => {
   }
 });
 
+// https://astro.build/config
 export default defineConfig({
   site: SITE_URL,
-  base: BASE_URL,      // 关键：设置 base 路径
+
   server: {
     port: 1977,
   },
+
   output: 'static',
+
   i18n: {
     defaultLocale,
     locales: locales as string[],
@@ -336,17 +340,20 @@ export default defineConfig({
       redirectToDefaultLocale: true,
     },
   },
+
   build: {
     inlineStylesheets: 'auto',
     format: 'directory',
     assets: '_astro',
   },
+
   image: {
     service: {
       entrypoint: 'astro/assets/services/sharp'
     },
     domains: ['strabi.lactisoles.com']
   },
+
   vite: {
     build: {
       rollupOptions: {
@@ -363,6 +370,7 @@ export default defineConfig({
       }
     }
   },
+
   integrations: [
     mdx(),
     sitemap({
@@ -381,6 +389,7 @@ export default defineConfig({
     UnoCSS({ injectReset: true }),
     vue(),
   ],
+
   markdown: {
     shikiConfig: {
       themes: {
@@ -733,7 +742,8 @@ pm2 save
  * - Prefers plural list fields for collections
  * - Adds system fields that actually exist in the type
  * - Identifies Single Types (isSingle flag)
- * - **识别以 Component 开头的类型作为组件，包含其所有标量字段**
+ * - 识别以 Component 开头的类型作为组件，包含其所有标量字段
+ * - **新增**: 处理 UploadFile 媒体类型，使其作为关系字段被正确缓存
  */
 
 import {
@@ -770,8 +780,8 @@ const FORCE_REFRESH = process.env.FORCE_REFRESH_SCHEMA === 'true';
 const SYSTEM_FIELDS = ['id', 'documentId', 'createdAt', 'updatedAt', 'publishedAt'];
 
 // 需要跳过的系统类型（不记录为内容类型或组件）
+// 注意：移除了 'UploadFile'，使其能够作为关系字段被处理
 const SKIP_SYSTEM_TYPES = [
-  'UploadFile',
   'I18NLocale',
   'ReviewWorkflowsWorkflow',
   'ReviewWorkflowsWorkflowStage',
@@ -806,6 +816,7 @@ type ContentTypeConfig = {
   relations: Record<string, RelationConfig | RelationConfig[]>;
   isSingle?: boolean;
   isComponent?: boolean;
+  isMedia?: boolean;  // 新增：标记媒体类型
 };
 
 type ConfigMap = Record<string, ContentTypeConfig>;
@@ -980,12 +991,12 @@ async function main() {
       const unwrapped = unwrap(f.type);
       if (isScalarType(unwrapped)) scalars.push(fname);
       else if (isObjectType(unwrapped)) {
-        // 如果关系目标是系统类型，跳过（不记录）
-        if (SKIP_SYSTEM_TYPES.includes(unwrapped.name)) continue;
+        // 如果关系目标是系统类型，但 UploadFile 需要保留（作为媒体）
+        if (SKIP_SYSTEM_TYPES.includes(unwrapped.name) && unwrapped.name !== 'UploadFile') continue;
         relations[fname] = { type: unwrapped.name, fields: [] };
       } else if (isInterfaceType(unwrapped) || isUnionType(unwrapped)) {
         const possibleTypes = schema.getPossibleTypes(unwrapped);
-        const componentTypes = possibleTypes.map(t => t.name).filter(name => !SKIP_SYSTEM_TYPES.includes(name));
+        const componentTypes = possibleTypes.map(t => t.name).filter(name => !SKIP_SYSTEM_TYPES.includes(name) || name === 'UploadFile');
         if (componentTypes.length > 0) {
           relations[fname] = componentTypes.map(compType => ({ type: compType, fields: [] }));
           console.log(`    ⚡ Dynamic zone field: ${fname} -> possible types: ${componentTypes.join(', ')}`);
@@ -1051,7 +1062,7 @@ async function main() {
   for (const typeName of referencedTypeNames) {
     // 跳过已经是内容类型的
     if (config[typeName]) continue;
-    // 跳过系统类型
+    // 跳过系统类型（但 UploadFile 单独处理，不在此处）
     if (SKIP_SYSTEM_TYPES.includes(typeName)) continue;
     // 只处理名称以 'Component' 开头的类型（Strapi 组件命名约定）
     if (!typeName.startsWith('Component')) continue;
@@ -1076,11 +1087,11 @@ async function main() {
       if (isScalarType(unwrapped)) {
         scalars.push(fname);
       } else if (isObjectType(unwrapped)) {
-        if (SKIP_SYSTEM_TYPES.includes(unwrapped.name)) continue;
+        if (SKIP_SYSTEM_TYPES.includes(unwrapped.name) && unwrapped.name !== 'UploadFile') continue;
         relations[fname] = { type: unwrapped.name, fields: [] };
       } else if (isInterfaceType(unwrapped) || isUnionType(unwrapped)) {
         const possibleTypes = schema.getPossibleTypes(unwrapped);
-        const componentTypes = possibleTypes.map(t => t.name).filter(name => !SKIP_SYSTEM_TYPES.includes(name));
+        const componentTypes = possibleTypes.map(t => t.name).filter(name => !SKIP_SYSTEM_TYPES.includes(name) || name === 'UploadFile');
         if (componentTypes.length > 0) {
           relations[fname] = componentTypes.map(compType => ({ type: compType, fields: [] }));
         }
@@ -1094,9 +1105,23 @@ async function main() {
     };
   }
 
-  // 合并内容类型和组件配置
-  const finalConfig = { ...config, ...componentConfig };
-  console.log(`\n📊 Total types recorded: ${Object.keys(finalConfig).length} (${Object.keys(config).length} content types + ${Object.keys(componentConfig).length} components)`);
+  // ========== 4. 为 UploadFile 媒体类型生成基础配置 ==========
+  const mediaConfig: ConfigMap = {};
+  if (referencedTypeNames.has('UploadFile') || config['UploadFile'] || componentConfig['UploadFile']) {
+    // 定义常用的媒体字段
+    const mediaScalars = ['url', 'alternativeText', 'name', 'width', 'height', 'mime', 'size', 'caption', 'formats'];
+    mediaConfig['UploadFile'] = {
+      scalars: mediaScalars,
+      relations: {},
+      isMedia: true,      // 自定义标记
+      isComponent: false,
+    };
+    console.log(`\n📸 Added media type configuration for UploadFile`);
+  }
+
+  // 合并内容类型、组件和媒体配置
+  const finalConfig = { ...config, ...componentConfig, ...mediaConfig };
+  console.log(`\n📊 Total types recorded: ${Object.keys(finalConfig).length} (${Object.keys(config).length} content types + ${Object.keys(componentConfig).length} components + ${Object.keys(mediaConfig).length} media types)`);
 
   const outDir = join(process.cwd(), 'src/generated');
   if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
@@ -1119,7 +1144,8 @@ main().catch(err => {
  * - Prefers plural list fields for collections
  * - Adds system fields that actually exist in the type
  * - Identifies Single Types (isSingle flag)
- * - **识别以 Component 开头的类型作为组件，包含其所有标量字段**
+ * - 识别以 Component 开头的类型作为组件，包含其所有标量字段
+ * - **新增**: 处理 UploadFile 媒体类型，使其作为关系字段被正确缓存
  */
 
 import {
@@ -1156,8 +1182,8 @@ const FORCE_REFRESH = process.env.FORCE_REFRESH_SCHEMA === 'true';
 const SYSTEM_FIELDS = ['id', 'documentId', 'createdAt', 'updatedAt', 'publishedAt'];
 
 // 需要跳过的系统类型（不记录为内容类型或组件）
+// 注意：移除了 'UploadFile'，使其能够作为关系字段被处理
 const SKIP_SYSTEM_TYPES = [
-  'UploadFile',
   'I18NLocale',
   'ReviewWorkflowsWorkflow',
   'ReviewWorkflowsWorkflowStage',
@@ -1192,6 +1218,7 @@ type ContentTypeConfig = {
   relations: Record<string, RelationConfig | RelationConfig[]>;
   isSingle?: boolean;
   isComponent?: boolean;
+  isMedia?: boolean;  // 新增：标记媒体类型
 };
 
 type ConfigMap = Record<string, ContentTypeConfig>;
@@ -1366,12 +1393,12 @@ async function main() {
       const unwrapped = unwrap(f.type);
       if (isScalarType(unwrapped)) scalars.push(fname);
       else if (isObjectType(unwrapped)) {
-        // 如果关系目标是系统类型，跳过（不记录）
-        if (SKIP_SYSTEM_TYPES.includes(unwrapped.name)) continue;
+        // 如果关系目标是系统类型，但 UploadFile 需要保留（作为媒体）
+        if (SKIP_SYSTEM_TYPES.includes(unwrapped.name) && unwrapped.name !== 'UploadFile') continue;
         relations[fname] = { type: unwrapped.name, fields: [] };
       } else if (isInterfaceType(unwrapped) || isUnionType(unwrapped)) {
         const possibleTypes = schema.getPossibleTypes(unwrapped);
-        const componentTypes = possibleTypes.map(t => t.name).filter(name => !SKIP_SYSTEM_TYPES.includes(name));
+        const componentTypes = possibleTypes.map(t => t.name).filter(name => !SKIP_SYSTEM_TYPES.includes(name) || name === 'UploadFile');
         if (componentTypes.length > 0) {
           relations[fname] = componentTypes.map(compType => ({ type: compType, fields: [] }));
           console.log(`    ⚡ Dynamic zone field: ${fname} -> possible types: ${componentTypes.join(', ')}`);
@@ -1437,7 +1464,7 @@ async function main() {
   for (const typeName of referencedTypeNames) {
     // 跳过已经是内容类型的
     if (config[typeName]) continue;
-    // 跳过系统类型
+    // 跳过系统类型（但 UploadFile 单独处理，不在此处）
     if (SKIP_SYSTEM_TYPES.includes(typeName)) continue;
     // 只处理名称以 'Component' 开头的类型（Strapi 组件命名约定）
     if (!typeName.startsWith('Component')) continue;
@@ -1462,11 +1489,11 @@ async function main() {
       if (isScalarType(unwrapped)) {
         scalars.push(fname);
       } else if (isObjectType(unwrapped)) {
-        if (SKIP_SYSTEM_TYPES.includes(unwrapped.name)) continue;
+        if (SKIP_SYSTEM_TYPES.includes(unwrapped.name) && unwrapped.name !== 'UploadFile') continue;
         relations[fname] = { type: unwrapped.name, fields: [] };
       } else if (isInterfaceType(unwrapped) || isUnionType(unwrapped)) {
         const possibleTypes = schema.getPossibleTypes(unwrapped);
-        const componentTypes = possibleTypes.map(t => t.name).filter(name => !SKIP_SYSTEM_TYPES.includes(name));
+        const componentTypes = possibleTypes.map(t => t.name).filter(name => !SKIP_SYSTEM_TYPES.includes(name) || name === 'UploadFile');
         if (componentTypes.length > 0) {
           relations[fname] = componentTypes.map(compType => ({ type: compType, fields: [] }));
         }
@@ -1480,9 +1507,23 @@ async function main() {
     };
   }
 
-  // 合并内容类型和组件配置
-  const finalConfig = { ...config, ...componentConfig };
-  console.log(`\n📊 Total types recorded: ${Object.keys(finalConfig).length} (${Object.keys(config).length} content types + ${Object.keys(componentConfig).length} components)`);
+  // ========== 4. 为 UploadFile 媒体类型生成基础配置 ==========
+  const mediaConfig: ConfigMap = {};
+  if (referencedTypeNames.has('UploadFile') || config['UploadFile'] || componentConfig['UploadFile']) {
+    // 定义常用的媒体字段
+    const mediaScalars = ['url', 'alternativeText', 'name', 'width', 'height', 'mime', 'size', 'caption', 'formats'];
+    mediaConfig['UploadFile'] = {
+      scalars: mediaScalars,
+      relations: {},
+      isMedia: true,      // 自定义标记
+      isComponent: false,
+    };
+    console.log(`\n📸 Added media type configuration for UploadFile`);
+  }
+
+  // 合并内容类型、组件和媒体配置
+  const finalConfig = { ...config, ...componentConfig, ...mediaConfig };
+  console.log(`\n📊 Total types recorded: ${Object.keys(finalConfig).length} (${Object.keys(config).length} content types + ${Object.keys(componentConfig).length} components + ${Object.keys(mediaConfig).length} media types)`);
 
   const outDir = join(process.cwd(), 'src/generated');
   if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
@@ -2329,6 +2370,7 @@ fetchStrapiConfig();
  * - Supports both Collection Types (with pagination) and Single Types
  * - Handles component list fields (simple object, no inline fragments needed)
  * - **新增：支持组件类型，仅为组件生成标量字段，避免递归，并排除 documentId**
+ * - **新增：处理 UploadFile 媒体类型，为其生成固定字段集**
  * - 注：由于环境启用了 GraphQL 扁平化模式，Single Type 直接返回字段，无需 data 包装
  */
 
@@ -2348,6 +2390,7 @@ type ContentTypeConfig = {
   relations: Record<string, RelationConfig | RelationConfig[]>;
   isSingle?: boolean;
   isComponent?: boolean;
+  isMedia?: boolean;      // 新增
 };
 
 type ConfigMap = Record<string, ContentTypeConfig>;
@@ -2364,6 +2407,7 @@ function hasDataWrapper(returnType: string): boolean {
 /**
  * 递归构建选择集。
  * - 对于组件类型（isComponent = true），只返回标量字段，不处理 relations，并排除 documentId。
+ * - 对于媒体类型（UploadFile 或 isMedia = true），返回预定义的媒体字段。
  * - 对于内容类型，正常处理标量字段和关系字段，并限制递归深度。
  */
 function buildSelection(
@@ -2374,6 +2418,13 @@ function buildSelection(
 ): string {
   const typeConfig = config[typeName];
   if (!typeConfig) return '';
+
+  // 媒体类型：返回固定的媒体字段集，不继续递归
+  if (typeName === 'UploadFile' || typeConfig.isMedia) {
+    const mediaFields = ['url', 'alternativeText', 'name', 'width', 'height', 'mime', 'size', 'caption', 'formats'];
+    return mediaFields.map(f => `        ${f}`).join('\n');
+  }
+
   if (depth > MAX_DEPTH) return '';
   if (visited.has(typeName)) return '';
 
@@ -2455,8 +2506,9 @@ function generateQueries(config: ConfigMap): string {
   let output = '';
 
   for (const [typeName, conf] of Object.entries(config)) {
-    // 跳过组件类型，只为内容类型（有 rootField）生成查询
+    // 跳过组件类型和媒体类型，只为内容类型（有 rootField）生成查询
     if (conf.isComponent) continue;
+    if (conf.isMedia) continue;
     if (!conf.rootField) continue;
 
     const { rootField, rootReturnType, args, isSingle } = conf;
@@ -2553,14 +2605,25 @@ function indent(block: string, spaces = 8): string {
   return block.split('\n').map(line => line ? pad + line : line).join('\n');
 }
 
+/**
+ * 构建选择集，与 generate-queries-correct.ts 中的逻辑保持一致
+ * 支持媒体类型 UploadFile
+ */
 function buildSelection(typeName: string, visited = new Set<string>(), depth = 0): string {
   if (depth > MAX_DEPTH) return '';
   if (visited.has(typeName)) return '';
   visited.add(typeName);
   const config = fieldConfig[typeName];
   if (!config) return '';
+
+  // 媒体类型：返回固定字段集
+  if (typeName === 'UploadFile' || config.isMedia) {
+    const mediaFields = ['url', 'alternativeText', 'name', 'width', 'height', 'mime', 'size', 'caption', 'formats'];
+    return mediaFields.map(f => `          ${f}`).join('\n');
+  }
+
   const { scalars = [], relations = {} as Record<string, any>, isComponent = false } = config;
-  
+
   // 组件类型不请求 documentId
   let scalarLines: string[];
   if (isComponent) {
@@ -2568,7 +2631,7 @@ function buildSelection(typeName: string, visited = new Set<string>(), depth = 0
   } else {
     scalarLines = ['documentId', ...scalars.filter(f => f !== 'documentId')];
   }
-  
+
   const relationLines = Object.entries(relations).map(([fieldName, rel]: [string, any]) => {
     if (fieldName === 'localizations') {
       const locConfig = fieldConfig[rel.type];
@@ -2591,7 +2654,7 @@ function buildSelection(typeName: string, visited = new Set<string>(), depth = 0
     if (!nested.trim()) return '';
     return `\n        ${fieldName} {\n${indent(nested)}\n        }`;
   }).filter(Boolean);
-  
+
   return [...scalarLines, ...relationLines].join('\n').trim();
 }
 
@@ -2712,50 +2775,42 @@ try {
 
 ## 文件：src/components/BaseHead.astro
 ---
-import siteConfig from '@/site-config';
-import type { Locale } from '@/types';
+import type { Locale } from '@/generated/i18n-config';
 import { getLocalizedUrl } from '@/i18n/utils';
 import { locales } from '@/generated/i18n-config';
 
 interface Props {
-  title?: string;
-  description?: string;
+  title: string;
+  description: string;
   pageType?: 'article' | 'website';
-  locale?: Locale;
-  url?: URL;
-  image?: {
-    src: string;
-    alt: string;
+  locale: Locale;
+  url: URL;
+  image?: { src: string; alt: string };
+  config: {
+    title: string;
+    description: string;
+    image: { src: string; alt: string };
+    author: string;
+    theme_color_light?: string;
+    theme_color_dark?: string;
+    twitter_card_type?: string;
+    fb_app_id?: string;
+    google_analytics_id?: string;
+    umami_website_id?: string;
   };
 }
 
-const {
-  title = siteConfig.title,
-  description = siteConfig.description,
-  pageType = 'website',
-  locale = 'en',
-  url = Astro.url,
-  image = siteConfig.image,
-} = Astro.props;
-
-// 优化 D8：确保 currentLocale 是有效的 Locale
-const rawLocale = Astro.currentLocale || locale;
-const currentLocale = locales.includes(rawLocale as Locale) ? rawLocale as Locale : 'en';
-
-const siteUrl = Astro.site?.origin || 'https://astro.example.com';
-
-// 优化 D7：预计算替代语言链接，避免每次渲染重复计算
+const { title, description, pageType = 'website', locale, url, image, config } = Astro.props;
+const siteUrl = Astro.site?.origin || 'https://example.com';
+const canonicalUrl = new URL(url.pathname, siteUrl).toString();
+const imageUrl = image?.src || config.image.src;
 const alternateUrls = locales.map((targetLocale: Locale) => {
   const localizedUrl = getLocalizedUrl(url, targetLocale);
   const fullUrl = new URL(localizedUrl, siteUrl).toString();
-  return {
-    lang: targetLocale,
-    href: fullUrl,
-  };
+  return { lang: targetLocale, href: fullUrl };
 });
-
-const canonicalUrl = new URL(url.pathname, siteUrl).toString();
-const imageUrl = image ? new URL(image.src, siteUrl).toString() : undefined;
+const themeColorLight = config.theme_color_light || '#ffffff';
+const themeColorDark = config.theme_color_dark || '#0f172a';
 ---
 
 <head>
@@ -2763,56 +2818,65 @@ const imageUrl = image ? new URL(image.src, siteUrl).toString() : undefined;
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="generator" content="Astro v5.6.2" />
 
-  <!-- 基础Meta -->
   <title>{title}</title>
   <meta name="description" content={description} />
-  <meta name="author" content={siteConfig.author} />
+  <meta name="author" content={config.author} />
 
-  <!-- Open Graph -->
   <meta property="og:title" content={title} />
   <meta property="og:description" content={description} />
   <meta property="og:type" content={pageType} />
   <meta property="og:url" content={canonicalUrl} />
-  <meta property="og:site_name" content={siteConfig.title} />
-  <meta property="og:locale" content={currentLocale === 'es' ? 'es_ES' : 'en_US'} />
+  <meta property="og:site_name" content={config.title} />
+  <meta property="og:locale" content={locale === 'es' ? 'es_ES' : 'en_US'} />
 
   {imageUrl && (
     <>
       <meta property="og:image" content={imageUrl} />
-      <meta property="og:image:alt" content={image.alt} />
+      <meta property="og:image:alt" content={image?.alt || config.image.alt} />
       <meta property="og:image:width" content="1200" />
       <meta property="og:image:height" content="630" />
     </>
   )}
 
-  <!-- Twitter Card -->
-  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:card" content={config.twitter_card_type || 'summary_large_image'} />
   <meta name="twitter:title" content={title} />
   <meta name="twitter:description" content={description} />
   {imageUrl && <meta name="twitter:image" content={imageUrl} />}
 
-  <!-- Hreflang -->
+  {config.fb_app_id && <meta property="fb:app_id" content={config.fb_app_id} />}
+
+  {config.google_analytics_id && (
+    <>
+      <script async src={`https://www.googletagmanager.com/gtag/js?id=${config.google_analytics_id}`}></script>
+      <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag(){dataLayer.push(arguments);}
+        gtag('js', new Date());
+        gtag('config', '${config.google_analytics_id}');
+      </script>
+    </>
+  )}
+
+  {config.umami_website_id && (
+    <script async defer src="https://analytics.umami.is/script.js" data-website-id={config.umami_website_id}></script>
+  )}
+
   {alternateUrls.map(({ lang, href }) => (
     <link rel="alternate" hreflang={lang} href={href} key={lang} />
   ))}
   <link rel="alternate" hreflang="x-default" href={alternateUrls.find(a => a.lang === 'en')?.href || canonicalUrl} />
 
-  <!-- Canonical -->
   <link rel="canonical" href={canonicalUrl} />
 
-  <!-- 图标 -->
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="alternate icon" href="/favicon.ico" type="image/x-icon" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180" />
 
-  <!-- RSS -->
-  <link rel="alternate" type="application/rss+xml" href="/rss.xml" title={`${siteConfig.title} RSS Feed`} />
+  <link rel="alternate" type="application/rss+xml" href="/rss.xml" title={`${config.title} RSS Feed`} />
 
-  <!-- 主题颜色 -->
-  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />
-  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f172a" />
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content={themeColorLight} />
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content={themeColorDark} />
 
-  <!-- 预加载关键资源 -->
   <link rel="preload" href="/favicon.svg" as="image" type="image/svg+xml" />
 </head>
 
@@ -2918,7 +2982,6 @@ const processedCopyright = computed(() => {
 ## 文件：src/components/Header.astro
 ---
 // src/components/Header.astro
-import siteConfig from '@/site-config';
 import ThemeToggle from './ThemeToggle.vue';
 import Menu from './Menu.astro';
 import { getMenuTree } from '@/lib/menu';
@@ -2928,29 +2991,31 @@ import { locales } from '@/generated/i18n-config';
 import { getAssetPath, getLocalizedPath, BASE_URL } from '@/lib/env';
 
 interface Props {
-  currentLocale?: Locale;
+  currentLocale: Locale;
+  config: {
+    title: string;
+    header: {
+      logo: { src: string; alt: string };
+      navLinks: Array<{ text: string; href: string }>;
+    };
+    socialLinks: Array<{ text: string; href: string; icon: string; header?: string | boolean }>;
+  };
 }
 
-const { currentLocale = 'en' as Locale } = Astro.props;
+const { currentLocale, config } = Astro.props;
 
 // ========== 动态菜单逻辑 ==========
 const menuTree = getMenuTree(currentLocale);
 const buttonItems = menuTree.filter(item => item.isButton);
 const navItems = menuTree.filter(item => !item.isButton);
 
-// 降级方案：当动态菜单为空时，使用站点配置的硬编码链接
-const getFallbackLinks = () => {
-  const baseLinks = siteConfig.header.navLinks || [];
-  const baseUrl = Astro.site?.origin || 'http://localhost';
-  return siteConfig.header.navLinks.map(link => ({
-    text: link.text,
-    href: getLocalizedUrl(new URL(link.href, baseUrl), currentLocale),
-  }));
-};
-const fallbackLinks = getFallbackLinks();
-// ========== 动态菜单逻辑结束 ==========
+// 后备链接（当动态菜单为空时，使用 global 中定义的 nav_links）
+const fallbackLinks = config.header.navLinks.map(link => ({
+  text: link.text,
+  href: getLocalizedUrl(new URL(link.href, Astro.url.origin), currentLocale),
+}));
 
-const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') || 
+const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
                    Astro.url.pathname === `${BASE_URL.replace(/\/$/, '')}/${currentLocale}`;
 ---
 
@@ -2966,22 +3031,22 @@ const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
         <a
           href={getLocalizedUrl(new URL('/', Astro.url.origin), currentLocale)}
           class="flex items-center space-x-3 group"
-          aria-label={siteConfig.title}
+          aria-label={config.title}
         >
           <img
             width="32"
             height="32"
-            src={getAssetPath(siteConfig.header.logo.src)}
-            alt={siteConfig.header.logo.alt}
+            src={getAssetPath(config.header.logo.src)}
+            alt={config.header.logo.alt}
             class="w-8 h-8 transition-transform group-hover:scale-110"
           />
           {isHomePage ? (
             <span class="font-semibold text-lg hidden md:inline">
-              {siteConfig.title}
+              {config.title}
             </span>
           ) : (
             <span class="font-semibold text-lg hidden md:inline text-gray-600 dark:text-gray-400">
-              {siteConfig.title}
+              {config.title}
             </span>
           )}
         </a>
@@ -3009,7 +3074,6 @@ const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
         {buttonItems.map(item => {
           let href = item.url;
           if (href && !href.startsWith('http')) {
-            // 使用 getLocalizedPath 生成包含 base 和 locale 的路径
             href = getLocalizedPath(currentLocale, href);
           }
           return (
@@ -3048,7 +3112,7 @@ const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
             );
           })}
 
-          {siteConfig.socialLinks
+          {config.socialLinks
             .filter(link => link.header && link.href)
             .map((link) => (
               <a
@@ -3108,11 +3172,11 @@ const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
         <img
           width="32"
           height="32"
-          src={getAssetPath(siteConfig.header.logo.src)}
-          alt={siteConfig.header.logo.alt}
+          src={getAssetPath(config.header.logo.src)}
+          alt={config.header.logo.alt}
           class="w-8 h-8"
         />
-        <span class="font-semibold text-lg">{siteConfig.title}</span>
+        <span class="font-semibold text-lg">{config.title}</span>
       </a>
       <button
         class="text-gray-700 dark:text-gray-300 p-2"
@@ -3195,7 +3259,7 @@ const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
 
       <!-- 社交链接（移动端） -->
       <div class="flex flex-wrap gap-4 px-4">
-        {siteConfig.socialLinks
+        {config.socialLinks
           .filter(link => link.header && link.href)
           .map((link) => (
             <a
@@ -3262,6 +3326,283 @@ const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
       }
     });
   });
+</script>
+
+## 文件：src/components/Header.vue
+<!-- src/components/Header.vue -->
+<script lang="ts" setup>
+import { computed } from 'vue'
+import ThemeToggle from './ThemeToggle.vue'
+import type { Locale } from '@/generated/i18n-config'
+import { getLocalizedUrl, getLanguageName } from '@/i18n/utils'
+import { locales } from '@/generated/i18n-config'
+import { getAssetPath, getLocalizedPath, BASE_URL } from '@/lib/env'
+import { getSiteConfig } from '@/site-config'
+
+const props = defineProps<{
+  currentLocale: Locale
+}>()
+
+const currentLocale = props.currentLocale
+const config = getSiteConfig(currentLocale)
+
+const logoUrl = computed(() => getAssetPath(config.header.logo.src))
+const isHomePage = computed(() => {
+  if (typeof window !== 'undefined') {
+    const path = window.location.pathname
+    const base = BASE_URL.replace(/\/$/, '')
+    return path === base || path === `${base}/${currentLocale}`
+  }
+  return false
+})
+
+const getHref = (url: string) => {
+  if (url.startsWith('http')) return url
+  return getLocalizedPath(currentLocale, url)
+}
+</script>
+
+<template>
+  <header
+    id="header"
+    class="fixed top-0 left-0 right-0 bg-white/90 dark:bg-gray-900/90 backdrop-blur-sm z-50 border-b border-gray-200 dark:border-gray-800"
+  >
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex justify-between items-center h-16">
+        <!-- Logo -->
+        <div class="flex items-center">
+          <a
+            :href="getLocalizedUrl(new URL('/', window.location.origin), currentLocale)"
+            class="flex items-center space-x-3 group"
+            :aria-label="config.title"
+          >
+            <img
+              width="32"
+              height="32"
+              :src="logoUrl"
+              :alt="config.header.logo.alt"
+              class="w-8 h-8 transition-transform group-hover:scale-110"
+            />
+            <span v-if="isHomePage" class="font-semibold text-lg hidden md:inline">
+              {{ config.title }}
+            </span>
+            <span v-else class="font-semibold text-lg hidden md:inline text-gray-600 dark:text-gray-400">
+              {{ config.title }}
+            </span>
+          </a>
+        </div>
+
+        <!-- Desktop Navigation -->
+        <nav class="hidden md:flex items-center space-x-2">
+          <!-- 动态菜单将由 Menu 组件处理，这里仅作为占位，实际菜单逻辑可通过 props 传递或自行实现 -->
+          <!-- 为简化，直接使用后备链接（从 config.header.navLinks 读取） -->
+          <template v-if="config.header.navLinks.length">
+            <a
+              v-for="link in config.header.navLinks"
+              :key="link.href"
+              :href="getHref(link.href)"
+              class="text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 transition-colors font-medium px-3 py-2"
+              :aria-label="link.text"
+            >
+              {{ link.text }}
+            </a>
+          </template>
+
+          <!-- 按钮菜单（如果有）可单独处理，此处省略，因为动态菜单需从 Strapi Menu 获取 -->
+
+          <!-- 语言切换器 + 社交链接 + 主题切换器 -->
+          <div class="flex items-center space-x-3 ml-4 pl-4 border-l border-gray-200 dark:border-gray-700">
+            <a
+              v-for="locale in locales"
+              :key="locale"
+              :href="getLocalizedUrl(new URL(window.location.pathname, window.location.origin), locale as Locale)"
+              :class="[
+                'px-2.5 py-1.5 rounded text-xs font-semibold transition-all',
+                currentLocale === locale
+                  ? 'bg-blue-500 text-white shadow-sm'
+                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800'
+              ]"
+              :aria-label="`Switch to ${getLanguageName(locale as Locale)}`"
+              :title="getLanguageName(locale as Locale)"
+            >
+              {{ (locale as string).toUpperCase() }}
+            </a>
+
+            <a
+              v-for="link in config.socialLinks.filter(l => l.header && l.href)"
+              :key="link.text"
+              :href="link.href"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-gray-600 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+              :aria-label="link.text"
+              :title="link.text"
+            >
+              <i :class="`${link.icon} text-lg`"></i>
+            </a>
+
+            <a
+              :href="getAssetPath('/rss.xml')"
+              target="_blank"
+              class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400 transition-colors"
+              aria-label="RSS Feed"
+              title="RSS Feed"
+            >
+              <i class="i-ri-rss-line text-lg"></i>
+            </a>
+
+            <ThemeToggle />
+          </div>
+        </nav>
+
+        <!-- Mobile Menu Button -->
+        <div class="md:hidden">
+          <button
+            id="mobile-menu-button"
+            class="text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 p-2"
+            aria-label="Open menu"
+            aria-controls="mobile-menu"
+            aria-expanded="false"
+          >
+            <i class="i-ri-menu-2-line text-xl"></i>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mobile Menu (简化实现，实际应使用完整结构) -->
+    <div
+      id="mobile-menu"
+      class="md:hidden hidden fixed inset-0 bg-white dark:bg-gray-900 z-50 overflow-y-auto"
+    >
+      <div class="flex justify-between items-center p-4 border-b border-gray-200 dark:border-gray-800">
+        <a
+          :href="getLocalizedUrl(new URL('/', window.location.origin), currentLocale)"
+          class="flex items-center space-x-3"
+          data-close-mobile-menu
+        >
+          <img :src="logoUrl" :alt="config.header.logo.alt" class="w-8 h-8" />
+          <span class="font-semibold text-lg">{{ config.title }}</span>
+        </a>
+        <button
+          class="text-gray-700 dark:text-gray-300 p-2"
+          aria-label="Close menu"
+          data-close-mobile-menu
+        >
+          <i class="i-ri-close-line text-2xl"></i>
+        </button>
+      </div>
+
+      <div class="p-4">
+        <nav class="space-y-2 mb-6">
+          <a
+            v-for="link in config.header.navLinks"
+            :key="link.href"
+            :href="getHref(link.href)"
+            class="block text-lg text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 py-3 px-4 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            data-close-mobile-menu
+          >
+            {{ link.text }}
+          </a>
+        </nav>
+
+        <!-- 语言切换器（移动端） -->
+        <div class="mb-6 pt-4 border-t border-gray-200 dark:border-gray-700">
+          <h3 class="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3 px-4">
+            {{ currentLocale === 'en' ? 'Language' : currentLocale === 'es' ? 'Idioma' : 'Langue' }}
+          </h3>
+          <div class="space-y-2">
+            <a
+              v-for="locale in locales"
+              :key="locale"
+              :href="getLocalizedUrl(new URL(window.location.pathname, window.location.origin), locale as Locale)"
+              :class="[
+                'flex items-center justify-between px-4 py-3 rounded-lg transition-colors',
+                currentLocale === locale
+                  ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
+                  : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
+              ]"
+              data-close-mobile-menu
+            >
+              <span class="font-medium">{{ getLanguageName(locale as Locale) }}</span>
+              <span class="text-sm opacity-75">{{ (locale as string).toUpperCase() }}</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- 社交链接（移动端） -->
+        <div class="flex flex-wrap gap-4 px-4">
+          <a
+            v-for="link in config.socialLinks.filter(l => l.header && l.href)"
+            :key="link.text"
+            :href="link.href"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="text-gray-600 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400"
+            :aria-label="link.text"
+            :title="link.text"
+            data-close-mobile-menu
+          >
+            <i :class="`${link.icon} text-xl`"></i>
+          </a>
+          <a
+            :href="getAssetPath('/rss.xml')"
+            target="_blank"
+            class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400"
+            aria-label="RSS Feed"
+            title="RSS Feed"
+            data-close-mobile-menu
+          >
+            <i class="i-ri-rss-line text-xl"></i>
+          </a>
+        </div>
+      </div>
+    </div>
+  </header>
+</template>
+
+<style scoped>
+/* 移动端菜单交互脚本已在 Header.astro 中实现，此处如需可添加，但建议在父组件中处理 */
+</style>
+
+<script lang="ts">
+// 移动端菜单交互逻辑
+if (typeof document !== 'undefined') {
+  document.addEventListener('DOMContentLoaded', () => {
+    const menuButton = document.getElementById('mobile-menu-button')
+    const mobileMenu = document.getElementById('mobile-menu')
+    const closeElements = document.querySelectorAll('[data-close-mobile-menu]')
+
+    const toggleMenu = () => {
+      if (!mobileMenu) return
+      const isHidden = mobileMenu.classList.contains('hidden')
+      mobileMenu.classList.toggle('hidden', !isHidden)
+      menuButton?.setAttribute('aria-expanded', String(isHidden))
+    }
+
+    const closeMenu = () => {
+      mobileMenu?.classList.add('hidden')
+      menuButton?.setAttribute('aria-expanded', 'false')
+    }
+
+    menuButton?.addEventListener('click', toggleMenu)
+    closeElements.forEach(el => el.addEventListener('click', closeMenu))
+
+    document.addEventListener('click', (event) => {
+      if (!mobileMenu || mobileMenu.classList.contains('hidden')) return
+      if (!mobileMenu.contains(event.target as Node) && !menuButton?.contains(event.target as Node)) {
+        closeMenu()
+      }
+    })
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && mobileMenu && !mobileMenu.classList.contains('hidden')) {
+        closeMenu()
+        menuButton?.focus()
+      }
+    })
+  })
+}
 </script>
 
 ## 文件：src/components/Menu.astro
@@ -3944,7 +4285,7 @@ import Footer from '@/components/Footer.vue';
 import ScrollToTop from '@/components/ScrollToTop.vue';
 import type { Locale, FooterData } from '@/types';
 import { getSingleContent } from '@/lib/content-cache';
-import { defaultFooter } from '@/lib/footer-default';
+import { getSiteConfig } from '@/site-config';
 
 interface Props {
   title?: string;
@@ -3956,25 +4297,27 @@ interface Props {
 
 const { title, description, pageType = 'website', locale, image } = Astro.props;
 const currentLocale = (Astro.currentLocale || locale || 'en') as Locale;
-const currentUrl = Astro.url;
-
+const config = getSiteConfig(currentLocale);
 const cachedFooter = getSingleContent<FooterData>('footer', currentLocale);
-const isValid = cachedFooter?.data && cachedFooter.__meta?.status === 'ok';
-const footerData = isValid ? cachedFooter.data : defaultFooter;
-
-if (!isValid) {
-  console.warn(`[Footer] Invalid or missing cache for locale "${currentLocale}", using default fallback.`);
-}
+const footerData = cachedFooter?.data ?? null;
 ---
 
 <!doctype html>
 <html lang={currentLocale}>
   <head>
-    <BaseHead title={title} description={description} pageType={pageType} locale={currentLocale} url={currentUrl} image={image} />
+    <BaseHead
+      title={title || config.title}
+      description={description || config.description}
+      pageType={pageType}
+      locale={currentLocale}
+      url={Astro.url}
+      image={image || config.image}
+      config={config}
+    />
     <ViewTransitions />
   </head>
   <body class="bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 min-h-screen font-sans antialiased transition-colors duration-300">
-    <Header currentLocale={currentLocale} />
+    <Header currentLocale={currentLocale} config={config} />
     <main class="min-h-screen pt-20 pb-16" transition:animate={fade({ duration: '0.4s' })}>
       <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <slot />
@@ -4229,33 +4572,10 @@ export function getStrapiGraphQLEndpoint(): string {
 
 ## 文件：src/lib/footer-default.ts
 // src/lib/footer-default.ts
-import type { FooterData, StrapiBlock } from '@/types';
+import type { FooterData } from '@/types';
 
-const defaultCopyrightBlocks: StrapiBlock[] = [
-  {
-    type: 'paragraph',
-    children: [{ type: 'text', text: '© 2025 Your Company. All rights reserved.' }]
-  }
-];
-
-export const defaultFooter: FooterData = {
-  product_categories: [{ label: 'Products', url: '/products', target: '_self' }],
-  right_groups: [
-    {
-      group_title: 'About',
-      links: [
-        { label: 'Company', url: '/about', target: '_self' },
-        { label: 'Contact', url: '/contact', target: '_self' },
-      ]
-    }
-  ],
-  certifications: [],
-  footer_links: [
-    { label: 'Privacy Policy', url: '/privacy', target: '_self' },
-    { label: 'Terms of Service', url: '/terms', target: '_self' },
-  ],
-  copyright: defaultCopyrightBlocks,
-};
+// 完全移除降级：当 Strapi 无 footer 数据时，不显示任何内容
+export const defaultFooter = null as unknown as FooterData;
 
 ## 文件：src/lib/menu.ts
 // src/lib/menu.ts
@@ -4421,6 +4741,7 @@ export const requestQueue = new RequestQueue(2, 1000);
 import BaseLayout from '@/layouts/BaseLayout.astro';
 import type { Locale } from '@/types';
 import { locales } from '@/generated/i18n-config';
+import { t } from '@/i18n/dict';
 
 export async function getStaticPaths() {
   return locales.map((locale: Locale) => ({
@@ -4430,49 +4751,31 @@ export async function getStaticPaths() {
 
 const currentLocale = Astro.currentLocale as Locale;
 
-// ✅ 静态文本对象 - 完全独立于翻译文件
+// 所有文本均从 Strapi 翻译系统获取
+const title = t(currentLocale, '404.title');
+const description = t(currentLocale, '404.description');
+const prompt = t(currentLocale, '404.prompt');
+const returnHome = t(currentLocale, '404.returnHome');
+
+// 导航链接文本（需在 Strapi translations 中定义）
 const navLinks = {
-  en: { blog: 'Blog', projects: 'Projects', notes: 'Notes' },
-  es: { blog: 'Blog', projects: 'Proyectos', notes: 'Notas' },
-  fr: { blog: 'Blog', projects: 'Projets', notes: 'Notes' },
-} as const;
-
-const prompts = {
-  en: 'Or try one of these pages:',
-  es: 'O prueba una de estas páginas:',
-  fr: 'Ou essayez l\'une de ces pages:',
-} as const;
-
-const titles = {
-  en: '404 - Page Not Found',
-  es: '404 - Página No Encontrada',
-  fr: '404 - Page Non Trouvée',
-} as const;
-
-const descriptions = {
-  en: 'Sorry, we couldn\'t find what you were looking for.',
-  es: 'Lo sentimos, no pudimos encontrar lo que buscabas.',
-  fr: 'Désolé, nous n\'avons pas trouvé ce que vous cherchiez.',
-} as const;
-
-const returnHome = {
-  en: 'Return Home',
-  es: 'Volver al Inicio',
-  fr: 'Retour à l\'accueil',
-} as const;
+  blog: t(currentLocale, 'nav.blog'),
+  projects: t(currentLocale, 'nav.projects'),
+  notes: t(currentLocale, 'nav.notes'),
+};
 ---
 
 <BaseLayout
-  title={titles[currentLocale]}
-  description={descriptions[currentLocale]}
+  title={title}
+  description={description}
   locale={currentLocale}
 >
   <div class="min-h-[70vh] flex flex-col items-center justify-center text-center px-4">
     <div class="mb-8">
       <div class="text-9xl font-bold text-gray-300 dark:text-gray-700 mb-2">404</div>
-      <h1 class="text-3xl font-bold mb-4">{titles[currentLocale]}</h1>
+      <h1 class="text-3xl font-bold mb-4">{title}</h1>
       <p class="text-xl text-gray-600 dark:text-gray-400 max-w-md mx-auto">
-        {descriptions[currentLocale]}
+        {description}
       </p>
     </div>
 
@@ -4481,20 +4784,20 @@ const returnHome = {
         href={`/${currentLocale}`}
         class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 transition-colors"
       >
-        {returnHome[currentLocale]}
+        {returnHome}
       </a>
 
       <div class="text-sm text-gray-500 dark:text-gray-400">
-        <p class="mb-2">{prompts[currentLocale]}</p>
+        <p class="mb-2">{prompt}</p>
         <div class="flex flex-wrap justify-center gap-3">
           <a href={`/${currentLocale}/blog`} class="text-blue-600 dark:text-blue-400 hover:underline">
-            {navLinks[currentLocale].blog}
+            {navLinks.blog}
           </a>
           <a href={`/${currentLocale}/projects`} class="text-blue-600 dark:text-blue-400 hover:underline">
-            {navLinks[currentLocale].projects}
+            {navLinks.projects}
           </a>
           <a href={`/${currentLocale}/notes`} class="text-blue-600 dark:text-blue-400 hover:underline">
-            {navLinks[currentLocale].notes}
+            {navLinks.notes}
           </a>
         </div>
       </div>
@@ -4504,10 +4807,10 @@ const returnHome = {
 
 ## 文件：src/pages/[locale]/[...slug].astro
 ---
-// src/pages/[locale]/[...slug].astro
 import BaseLayout from '@/layouts/BaseLayout.astro';
 import type { Locale } from '@/types';
 import { locales } from '@/generated/i18n-config';
+import { t } from '@/i18n/dict';
 
 export async function getStaticPaths() {
   return locales.map((locale: Locale) => ({
@@ -4520,49 +4823,29 @@ export async function getStaticPaths() {
 
 const currentLocale = Astro.currentLocale as Locale;
 
-// ✅ 静态文本对象 - 完全独立于翻译文件
+const title = t(currentLocale, '404.title');
+const description = t(currentLocale, '404.description');
+const prompt = t(currentLocale, '404.prompt');
+const returnHome = t(currentLocale, '404.returnHome');
+
 const navLinks = {
-  en: { blog: 'Blog', projects: 'Projects', notes: 'Notes' },
-  es: { blog: 'Blog', projects: 'Proyectos', notes: 'Notas' },
-  fr: { blog: 'Blog', projects: 'Projets', notes: 'Notes' },
-} as const;
-
-const prompts = {
-  en: 'Or try one of these pages:',
-  es: 'O prueba una de estas páginas:',
-  fr: 'Ou essayez l\'une de ces pages:',
-} as const;
-
-const titles = {
-  en: '404 - Page Not Found',
-  es: '404 - Página No Encontrada',
-  fr: '404 - Page Non Trouvée',
-} as const;
-
-const descriptions = {
-  en: 'Sorry, we couldn\'t find what you were looking for.',
-  es: 'Lo sentimos, no pudimos encontrar lo que buscabas.',
-  fr: 'Désolé, nous n\'avons pas trouvé ce que vous cherchiez.',
-} as const;
-
-const returnHome = {
-  en: 'Return Home',
-  es: 'Volver al Inicio',
-  fr: 'Retour à l\'accueil',
-} as const;
+  blog: t(currentLocale, 'nav.blog'),
+  projects: t(currentLocale, 'nav.projects'),
+  notes: t(currentLocale, 'nav.notes'),
+};
 ---
 
 <BaseLayout
-  title={titles[currentLocale]}
-  description={descriptions[currentLocale]}
+  title={title}
+  description={description}
   locale={currentLocale}
 >
   <div class="min-h-[70vh] flex flex-col items-center justify-center text-center px-4">
     <div class="mb-8">
       <div class="text-9xl font-bold text-gray-300 dark:text-gray-700 mb-2">404</div>
-      <h1 class="text-3xl font-bold mb-4">{titles[currentLocale]}</h1>
+      <h1 class="text-3xl font-bold mb-4">{title}</h1>
       <p class="text-xl text-gray-600 dark:text-gray-400 max-w-md mx-auto">
-        {descriptions[currentLocale]}
+        {description}
       </p>
     </div>
 
@@ -4571,20 +4854,20 @@ const returnHome = {
         href={`/${currentLocale}`}
         class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 transition-colors"
       >
-        {returnHome[currentLocale]}
+        {returnHome}
       </a>
 
       <div class="text-sm text-gray-500 dark:text-gray-400">
-        <p class="mb-2">{prompts[currentLocale]}</p>
+        <p class="mb-2">{prompt}</p>
         <div class="flex flex-wrap justify-center gap-3">
           <a href={`/${currentLocale}/blog`} class="text-blue-600 dark:text-blue-400 hover:underline">
-            {navLinks[currentLocale].blog}
+            {navLinks.blog}
           </a>
           <a href={`/${currentLocale}/projects`} class="text-blue-600 dark:text-blue-400 hover:underline">
-            {navLinks[currentLocale].projects}
+            {navLinks.projects}
           </a>
           <a href={`/${currentLocale}/notes`} class="text-blue-600 dark:text-blue-400 hover:underline">
-            {navLinks[currentLocale].notes}
+            {navLinks.notes}
           </a>
         </div>
       </div>
@@ -4594,34 +4877,27 @@ const returnHome = {
 
 ## 文件：src/pages/[locale]/blog/[slug].astro
 ---
-// src/pages/[locale]/blog/[slug].astro
 import BaseLayout from '@/layouts/BaseLayout.astro';
 import { locales, type Locale, getLanguageName } from '@/generated/i18n-config';
 import { getAllContent } from '@/lib/content-cache';
 import { t } from '@/i18n/dict';
 import type { Blog } from '@/generated/graphql-types';
 import { getFullImageUrl, getLocalizedPath } from '@/lib/env';
-// 引入 Markdown 渲染器（如未安装 marked，请先 npm install marked）
 import { marked } from 'marked';
-// 如果您的项目已有 RichTextRenderer 并能处理 Strapi JSON，可以保留；否则使用 marked 作为 fallback
 import RichTextRenderer from '@/components/RichTextRenderer.astro';
+import { getSiteConfig } from '@/site-config';
 
 export async function getStaticPaths() {
   const blogMap = getAllContent<Blog>('blog');
   const paths = [];
-
   for (const locale of Object.keys(blogMap) as Locale[]) {
     const blogs = blogMap[locale];
     for (const blog of blogs) {
       if (blog.slug) {
-        paths.push({
-          params: { locale, slug: blog.slug },
-          props: { blog },
-        });
+        paths.push({ params: { locale, slug: blog.slug }, props: { blog } });
       }
     }
   }
-
   console.log(`[Blog Detail] Generated ${paths.length} paths from cache`);
   return paths;
 }
@@ -4632,21 +4908,14 @@ interface Props {
 
 const { blog } = Astro.props;
 const { locale } = Astro.params as { locale: Locale };
+const config = getSiteConfig(locale);
 
-// 处理本地化链接
 const otherLanguages = (blog.localizations || [])
   .filter((loc: any) => loc.locale !== locale)
-  .map((loc: any) => ({
-    locale: loc.locale,
-    slug: loc.slug,
-    title: loc.title,
-    documentId: loc.documentId,
-  }));
+  .map((loc: any) => ({ locale: loc.locale, slug: loc.slug, title: loc.title, documentId: loc.documentId }));
 
-// 处理分类
 const categories = Array.isArray(blog.categories) ? blog.categories : (blog.categories ? [blog.categories] : []);
 
-// 翻译
 const translations = {
   availableIn: t(locale, 'common.availableIn'),
   backToBlog: t(locale, 'common.backToBlog'),
@@ -4655,49 +4924,43 @@ const translations = {
   categories: t(locale, 'common.categories'),
 };
 
-// 处理封面图片（数组）
 const coverItem = Array.isArray(blog.cover) ? blog.cover[0] : blog.cover;
 const coverImageUrl = getFullImageUrl(coverItem?.url);
 const coverAlt = coverItem?.alternativeText || blog.title;
 
-// 处理内容渲染
 let contentHtml: string | null = null;
 let useRichTextRenderer = false;
-
-// 判断 content 类型
 if (blog.content) {
   if (typeof blog.content === 'string') {
-    // 如果是 Markdown 字符串，使用 marked 渲染
     contentHtml = await marked.parse(blog.content);
   } else if (Array.isArray(blog.content)) {
-    // 如果是 Strapi 富文本 JSON 数组，尝试使用 RichTextRenderer（需确保它能处理）
-    // 如果 RichTextRenderer 无法处理，可以降级提取纯文本
     useRichTextRenderer = true;
   } else {
-    // 其他情况，转为字符串
     contentHtml = String(blog.content);
   }
 }
 ---
 
-<BaseLayout title={blog.title} description={blog.description || blog.title} pageType="article" locale={locale} image={coverImageUrl ? { src: coverImageUrl, alt: coverAlt } : undefined}>
+<BaseLayout
+  title={blog.title}
+  description={blog.description || blog.title}
+  pageType="article"
+  locale={locale}
+  image={coverImageUrl ? { src: coverImageUrl, alt: coverAlt } : config.image}
+>
   <article class="max-w-3xl mx-auto">
     <header class="mb-8">
       <h1 class="text-4xl md:text-5xl font-bold mb-4">{blog.title}</h1>
-
       <div class="flex flex-wrap items-center gap-4 text-gray-600 dark:text-gray-400 mb-6">
         <div class="flex items-center"><span class="font-medium">{blog.author}</span></div>
         <div class="flex items-center">
           <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clip-rule="evenodd" /></svg>
-          <time datetime={blog.publishedAt}>
-            {new Date(blog.publishedAt).toLocaleDateString(locale, { year: 'numeric', month: 'long', day: 'numeric' })}
-          </time>
+          <time datetime={blog.publishedAt}>{new Date(blog.publishedAt).toLocaleDateString(locale, { year: 'numeric', month: 'long', day: 'numeric' })}</time>
         </div>
         <div class="flex items-center">
           <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd" /></svg>
           <span>{Math.ceil((blog.content || []).length / 100)} {translations.minRead}</span>
         </div>
-
         {categories.length > 0 && (
           <div class="flex items-center gap-2">
             <span class="text-sm text-gray-500 dark:text-gray-400">{translations.categories}:</span>
@@ -4709,7 +4972,6 @@ if (blog.content) {
           </div>
         )}
       </div>
-
       {coverImageUrl && (
         <div class="mb-8">
           <img src={coverImageUrl} alt={coverAlt} width={1200} height={630} class="w-full h-auto max-h-96 object-cover rounded-xl shadow-lg" loading="eager" decoding="async" />
@@ -4718,7 +4980,6 @@ if (blog.content) {
       )}
     </header>
 
-    <!-- 文章内容渲染 -->
     <div class="prose dark:prose-invert prose-lg max-w-none mb-12">
       {useRichTextRenderer ? (
         <RichTextRenderer content={blog.content} />
@@ -4742,7 +5003,6 @@ if (blog.content) {
           </div>
         </div>
       )}
-
       <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <a href={getLocalizedPath(locale, '/blog')} class="inline-flex items-center text-blue-600 dark:text-blue-400 hover:underline font-medium">
           <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
@@ -4765,18 +5025,18 @@ import type { Blog } from '@/generated/graphql-types';
 import { t } from '@/i18n/dict';
 import { Image } from 'astro:assets';
 import { getFullImageUrl, getLocalizedPath } from '@/lib/env';
+import { getSiteConfig } from '@/site-config';
 
 export async function getStaticPaths() {
-  return locales.map((locale) => ({
-    params: { locale },
-  }));
+  return locales.map((locale) => ({ params: { locale } }));
 }
 
 const { locale } = Astro.params as { locale: Locale };
+const config = getSiteConfig(locale);
 const blogs = getContentList<Blog>('blog', locale);
 ---
 
-<BaseLayout title={t(locale, 'blog.title')} locale={locale}>
+<BaseLayout title={t(locale, 'blog.title')} description={`${config.title} - ${t(locale, 'blog.title')}`} locale={locale}>
   <div class="container mx-auto px-4 py-8">
     <header class="mb-12">
       <h1 class="text-5xl font-bold mb-4">{t(locale, 'blog.title')}</h1>
@@ -4790,7 +5050,6 @@ const blogs = getContentList<Blog>('blog', locale);
     ) : (
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
         {blogs.map((blog) => {
-          // 处理 cover 数组：取第一个图片对象
           const coverItem = Array.isArray(blog.cover) ? blog.cover[0] : blog.cover;
           const coverImageUrl = getFullImageUrl(coverItem?.url);
           const coverAlt = coverItem?.alternativeText || blog.title;
@@ -4814,11 +5073,7 @@ const blogs = getContentList<Blog>('blog', locale);
                     </>
                   )}
                   <time datetime={blog.publishedAt}>
-                    {new Date(blog.publishedAt).toLocaleDateString(locale, {
-                      year: 'numeric',
-                      month: 'short',
-                      day: 'numeric',
-                    })}
+                    {new Date(blog.publishedAt).toLocaleDateString(locale, { year: 'numeric', month: 'short', day: 'numeric' })}
                   </time>
                 </div>
                 {blog.excerpt && <p class="text-gray-700 dark:text-gray-300 mb-4 line-clamp-3">{blog.excerpt}</p>}
@@ -4838,32 +5093,31 @@ const blogs = getContentList<Blog>('blog', locale);
 ## 文件：src/pages/[locale]/index.astro
 ---
 import BaseLayout from '@/layouts/BaseLayout.astro';
-import siteConfig from '@/site-config';
 import { locales, type Locale } from '@/generated/i18n-config';
 import { getContentList } from '@/lib/content-cache';
 import type { Blog } from '@/generated/graphql-types';
 import { t } from '@/i18n/dict';
 import { Image } from 'astro:assets';
 import { getFullImageUrl, getLocalizedPath } from '@/lib/env';
+import { getSiteConfig } from '@/site-config';
 
 export async function getStaticPaths() {
-  return locales.map((locale) => ({
-    params: { locale },
-  }));
+  return locales.map((locale) => ({ params: { locale } }));
 }
 
 const { locale } = Astro.params as { locale: Locale };
+const config = getSiteConfig(locale);
 const allBlogs = getContentList<Blog>('blog', locale);
 const latestBlogs = allBlogs.slice(0, 3);
 ---
 
-<BaseLayout title={siteConfig.title} description={siteConfig.description} locale={locale}>
+<BaseLayout title={config.title} description={config.description} locale={locale}>
   <div class="space-y-12">
     <!-- Hero Section -->
     <section class="text-center py-12">
       <h1 class="text-4xl md:text-5xl font-bold mb-4">{t(locale, 'home.welcome')}</h1>
-      <p class="text-xl text-gray-600 dark:text-gray-300 mb-6">{siteConfig.subtitle}</p>
-      <p class="text-gray-700 dark:text-gray-300 max-w-2xl mx-auto">{siteConfig.description}</p>
+      <p class="text-xl text-gray-600 dark:text-gray-300 mb-6">{config.subtitle}</p>
+      <p class="text-gray-700 dark:text-gray-300 max-w-2xl mx-auto">{config.description}</p>
     </section>
 
     <!-- Recent Posts -->
@@ -4873,7 +5127,6 @@ const latestBlogs = allBlogs.slice(0, 3);
       {latestBlogs.length > 0 ? (
         <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           {latestBlogs.map((blog) => {
-            // 处理 cover 数组：取第一个图片对象
             const coverItem = Array.isArray(blog.cover) ? blog.cover[0] : blog.cover;
             const coverImageUrl = getFullImageUrl(coverItem?.url);
             const coverAlt = coverItem?.alternativeText || blog.title;
@@ -4882,39 +5135,20 @@ const latestBlogs = allBlogs.slice(0, 3);
               <article key={blog.documentId} class="bg-white dark:bg-gray-800 rounded-lg shadow-md overflow-hidden hover:shadow-lg transition-shadow">
                 {coverImageUrl && (
                   <a href={blogUrl}>
-                    <Image
-                      src={coverImageUrl}
-                      alt={coverAlt}
-                      width={600}
-                      height={400}
-                      class="w-full h-48 object-cover"
-                      loading="lazy"
-                      decoding="async"
-                      format="webp"
-                    />
+                    <Image src={coverImageUrl} alt={coverAlt} width={600} height={400} class="w-full h-48 object-cover" loading="lazy" decoding="async" format="webp" />
                   </a>
                 )}
                 <div class="p-6">
                   <h3 class="text-xl font-semibold mb-2">
-                    <a href={blogUrl} class="text-gray-900 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
-                      {blog.title}
-                    </a>
+                    <a href={blogUrl} class="text-gray-900 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400 transition-colors">{blog.title}</a>
                   </h3>
                   <div class="text-sm text-gray-500 dark:text-gray-400 mb-3">
                     <span>{blog.author}</span>
                     <span class="mx-2">•</span>
-                    <time datetime={blog.publishedAt}>
-                      {new Date(blog.publishedAt).toLocaleDateString(locale, {
-                        year: 'numeric',
-                        month: 'short',
-                        day: 'numeric',
-                      })}
-                    </time>
+                    <time datetime={blog.publishedAt}>{new Date(blog.publishedAt).toLocaleDateString(locale, { year: 'numeric', month: 'short', day: 'numeric' })}</time>
                   </div>
                   {blog.excerpt && <p class="text-gray-600 dark:text-gray-300 mb-4">{blog.excerpt}</p>}
-                  <a href={blogUrl} class="inline-flex items-center text-blue-600 dark:text-blue-400 hover:underline font-medium">
-                    {t(locale, 'common.readMore')}
-                  </a>
+                  <a href={blogUrl} class="inline-flex items-center text-blue-600 dark:text-blue-400 hover:underline font-medium">{t(locale, 'common.readMore')}</a>
                 </div>
               </article>
             );
@@ -4937,7 +5171,7 @@ const latestBlogs = allBlogs.slice(0, 3);
     <section class="text-center pt-8 border-t border-gray-200 dark:border-gray-700">
       <h3 class="text-2xl font-bold mb-6">{t(locale, 'home.findMeOn')}</h3>
       <div class="flex flex-wrap justify-center gap-4">
-        {siteConfig.socialLinks.filter(link => link.href).map((link) => (
+        {config.socialLinks.filter(link => link.href).map((link) => (
           <a key={link.text} href={link.href} target="_blank" rel="noopener noreferrer" class="inline-flex items-center space-x-2 px-4 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors" aria-label={link.text}>
             <i class={link.icon}></i>
             <span>{link.text}</span>
@@ -4949,27 +5183,110 @@ const latestBlogs = allBlogs.slice(0, 3);
 </BaseLayout>
 
 ## 文件：src/pages/index.astro
+---
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import { locales, type Locale } from '@/generated/i18n-config';
+import { getContentList } from '@/lib/content-cache';
+import type { Blog } from '@/generated/graphql-types';
+import { t } from '@/i18n/dict';
+import { Image } from 'astro:assets';
+import { getFullImageUrl, getLocalizedPath } from '@/lib/env';
+import { getSiteConfig } from '@/site-config';
+
+export async function getStaticPaths() {
+  return locales.map((locale) => ({ params: { locale } }));
+}
+
+const { locale } = Astro.params as { locale: Locale };
+const config = getSiteConfig(locale);
+const allBlogs = getContentList<Blog>('blog', locale);
+const latestBlogs = allBlogs.slice(0, 3);
+---
+
+<BaseLayout title={config.title} description={config.description} locale={locale}>
+  <div class="space-y-12">
+    <section class="text-center py-12">
+      <h1 class="text-4xl md:text-5xl font-bold mb-4">{t(locale, 'home.welcome')}</h1>
+      <p class="text-xl text-gray-600 dark:text-gray-300 mb-6">{config.subtitle}</p>
+      <p class="text-gray-700 dark:text-gray-300 max-w-2xl mx-auto">{config.description}</p>
+    </section>
+
+    <section>
+      <h2 class="text-3xl font-bold mb-8">{t(locale, 'common.recentPosts')}</h2>
+      {latestBlogs.length > 0 ? (
+        <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+          {latestBlogs.map((blog) => {
+            const coverItem = Array.isArray(blog.cover) ? blog.cover[0] : blog.cover;
+            const coverImageUrl = getFullImageUrl(coverItem?.url);
+            const coverAlt = coverItem?.alternativeText || blog.title;
+            const blogUrl = getLocalizedPath(locale, `/blog/${blog.slug}`);
+            return (
+              <article key={blog.documentId} class="bg-white dark:bg-gray-800 rounded-lg shadow-md overflow-hidden hover:shadow-lg transition-shadow">
+                {coverImageUrl && (
+                  <a href={blogUrl}>
+                    <Image src={coverImageUrl} alt={coverAlt} width={600} height={400} class="w-full h-48 object-cover" loading="lazy" decoding="async" format="webp" />
+                  </a>
+                )}
+                <div class="p-6">
+                  <h3 class="text-xl font-semibold mb-2">
+                    <a href={blogUrl} class="text-gray-900 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400 transition-colors">{blog.title}</a>
+                  </h3>
+                  <div class="text-sm text-gray-500 dark:text-gray-400 mb-3">
+                    <span>{blog.author}</span>
+                    <span class="mx-2">•</span>
+                    <time datetime={blog.publishedAt}>{new Date(blog.publishedAt).toLocaleDateString(locale, { year: 'numeric', month: 'short', day: 'numeric' })}</time>
+                  </div>
+                  {blog.excerpt && <p class="text-gray-600 dark:text-gray-300 mb-4">{blog.excerpt}</p>}
+                  <a href={blogUrl} class="inline-flex items-center text-blue-600 dark:text-blue-400 hover:underline font-medium">{t(locale, 'common.readMore')}</a>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <p class="text-gray-600 dark:text-gray-400 text-center py-8">{t(locale, 'common.noPosts')}</p>
+      )}
+      {latestBlogs.length > 0 && (
+        <div class="text-center mt-8">
+          <a href={getLocalizedPath(locale, '/blog')} class="inline-flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 transition-colors">{t(locale, 'blog.allPosts')}</a>
+        </div>
+      )}
+    </section>
+
+    <section class="text-center pt-8 border-t border-gray-200 dark:border-gray-700">
+      <h3 class="text-2xl font-bold mb-6">{t(locale, 'home.findMeOn')}</h3>
+      <div class="flex flex-wrap justify-center gap-4">
+        {config.socialLinks.filter(link => link.href).map((link) => (
+          <a key={link.text} href={link.href} target="_blank" rel="noopener noreferrer" class="inline-flex items-center space-x-2 px-4 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors" aria-label={link.text}>
+            <i class={link.icon}></i>
+            <span>{link.text}</span>
+          </a>
+        ))}
+      </div>
+    </section>
+  </div>
+</BaseLayout>
 
 ## 文件：src/pages/rss.xml.ts
 import rss from '@astrojs/rss';
-import siteConfig from '@/site-config';
 import { defaultLocale, locales, type Locale } from '@/generated/i18n-config';
 import { getContentList } from '@/lib/content-cache';
 import type { Blog } from '@/generated/graphql-types';
 import type { APIContext } from 'astro';
 import { getLocalizedPath } from '@/lib/env';
+import { getSiteConfig } from '@/site-config';
 
 export async function GET(context: APIContext) {
   const url = new URL(context.request.url);
   const localeParam = url.searchParams.get('locale');
   const locale = (localeParam && locales.includes(localeParam as Locale)) ? localeParam : defaultLocale;
-
+  const config = getSiteConfig(locale as Locale);
   const blogs = getContentList<Blog>('blog', locale as Locale);
   const publishedBlogs = blogs.filter((blog) => blog.publishedAt);
 
   return rss({
-    title: siteConfig.title,
-    description: siteConfig.description,
+    title: config.title,
+    description: config.description,
     site: context.site?.toString() || 'https://example.com',
     items: publishedBlogs.map((blog) => ({
       title: blog.title,
@@ -4982,25 +5299,62 @@ export async function GET(context: APIContext) {
 }
 
 ## 文件：src/site-config.ts
-export const siteConfig = {
-  author: 'Wayne Lion',
-  title: 'Test Web',
-  subtitle: 'Astro + Strapi + Graphql Website.',
-  description: 'A Minimal, SEO-friendly portfolio and blog Astro Website.',
-  image: { src: '/hero.jpg', alt: 'Website Main Image' },
-  email: 'sample@gmail.com',
-  socialLinks: [
-    { text: 'GitHub', href: 'https://github.com/kieranwv/astro-theme-vitesse', icon: 'i-simple-icons-github', header: 'i-ri-github-line' },
-    { text: 'Twitter', href: '', icon: 'i-simple-icons-x', header: 'i-ri-twitter-x-line' },
-    { text: 'Linkedin', href: '', icon: 'i-simple-icons-linkedin' },
-    { text: 'Instagram', href: '', icon: 'i-simple-icons-instagram' },
-    { text: 'Youtube', href: '', icon: 'i-simple-icons-youtube' },
-  ],
-  header: { logo: { src: '/favicon.svg', alt: 'Logo Image' }, navLinks: [] },
-  // footer 已迁移至 Strapi 管理，不再在此定义
-};
+// src/site-config.ts
+import type { Locale } from '@/generated/i18n-config';
+import { getSingleContent } from '@/lib/content-cache';
+import type { Global } from '@/generated/graphql-types';
+import { getFullImageUrl } from '@/lib/env';
 
-export default siteConfig;
+function normalizeSocialLink(link: NonNullable<Global['social_links']>[0]) {
+  return {
+    text: link.platform || '',
+    href: link.url,
+    icon: link.icon_class,
+    header: link.show_in_header ? link.icon_class?.replace('i-simple-icons', 'i-ri') : false,
+  };
+}
+
+function normalizeNavLink(link: { label: string; url: string; is_button?: boolean }) {
+  return { text: link.label, href: link.url };
+}
+
+export function getSiteConfig(locale: Locale) {
+  const globalData = getSingleContent<Global>('global', locale);
+  if (!globalData?.data) {
+    throw new Error(`[site-config] No global data for locale "${locale}".`);
+  }
+  const data = globalData.data;
+
+  return {
+    author: data.author || '',
+    title: data.title,
+    subtitle: data.subtitle || '',
+    description: data.description || '',
+    email: data.email || '',
+    image: {
+      src: data.image?.url ? getFullImageUrl(data.image.url) : '',
+      alt: data.image?.alternativeText || '',
+    },
+    header: {
+      logo: {
+        src: data.header_logo?.url ? getFullImageUrl(data.header_logo.url) : '',
+        alt: data.header_logo?.alternativeText || '',
+      },
+      navLinks: (data as any).nav_links?.map(normalizeNavLink) || [],
+    },
+    socialLinks: (data.social_links || []).map(normalizeSocialLink),
+    // 扩展字段
+    theme_color_light: data.theme_color_light,
+    theme_color_dark: data.theme_color_dark,
+    primary_color: data.primary_color,
+    twitter_card_type: data.twitter_card_type,
+    fb_app_id: data.fb_app_id,
+    google_analytics_id: data.google_analytics_id,
+    umami_website_id: data.umami_website_id,
+    rss_enabled: data.rss_enabled,
+    maintenance_mode: data.maintenance_mode,
+  };
+}
 
 ## 文件：src/types.ts
 // src/types.ts

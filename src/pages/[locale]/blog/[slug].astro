@@ -1,32 +1,25 @@
 ---
-// src/pages/[locale]/blog/[slug].astro
 import BaseLayout from '@/layouts/BaseLayout.astro';
 import { locales, type Locale, getLanguageName } from '@/generated/i18n-config';
 import { getAllContent } from '@/lib/content-cache';
 import { t } from '@/i18n/dict';
 import type { Blog } from '@/generated/graphql-types';
 import { getFullImageUrl, getLocalizedPath } from '@/lib/env';
-// 引入 Markdown 渲染器（如未安装 marked，请先 npm install marked）
 import { marked } from 'marked';
-// 如果您的项目已有 RichTextRenderer 并能处理 Strapi JSON，可以保留；否则使用 marked 作为 fallback
 import RichTextRenderer from '@/components/RichTextRenderer.astro';
+import { getSiteConfig } from '@/site-config';
 
 export async function getStaticPaths() {
   const blogMap = getAllContent<Blog>('blog');
   const paths = [];
-
   for (const locale of Object.keys(blogMap) as Locale[]) {
     const blogs = blogMap[locale];
     for (const blog of blogs) {
       if (blog.slug) {
-        paths.push({
-          params: { locale, slug: blog.slug },
-          props: { blog },
-        });
+        paths.push({ params: { locale, slug: blog.slug }, props: { blog } });
       }
     }
   }
-
   console.log(`[Blog Detail] Generated ${paths.length} paths from cache`);
   return paths;
 }
@@ -37,21 +30,14 @@ interface Props {
 
 const { blog } = Astro.props;
 const { locale } = Astro.params as { locale: Locale };
+const config = getSiteConfig(locale);
 
-// 处理本地化链接
 const otherLanguages = (blog.localizations || [])
   .filter((loc: any) => loc.locale !== locale)
-  .map((loc: any) => ({
-    locale: loc.locale,
-    slug: loc.slug,
-    title: loc.title,
-    documentId: loc.documentId,
-  }));
+  .map((loc: any) => ({ locale: loc.locale, slug: loc.slug, title: loc.title, documentId: loc.documentId }));
 
-// 处理分类
 const categories = Array.isArray(blog.categories) ? blog.categories : (blog.categories ? [blog.categories] : []);
 
-// 翻译
 const translations = {
   availableIn: t(locale, 'common.availableIn'),
   backToBlog: t(locale, 'common.backToBlog'),
@@ -60,49 +46,43 @@ const translations = {
   categories: t(locale, 'common.categories'),
 };
 
-// 处理封面图片（数组）
 const coverItem = Array.isArray(blog.cover) ? blog.cover[0] : blog.cover;
 const coverImageUrl = getFullImageUrl(coverItem?.url);
 const coverAlt = coverItem?.alternativeText || blog.title;
 
-// 处理内容渲染
 let contentHtml: string | null = null;
 let useRichTextRenderer = false;
-
-// 判断 content 类型
 if (blog.content) {
   if (typeof blog.content === 'string') {
-    // 如果是 Markdown 字符串，使用 marked 渲染
     contentHtml = await marked.parse(blog.content);
   } else if (Array.isArray(blog.content)) {
-    // 如果是 Strapi 富文本 JSON 数组，尝试使用 RichTextRenderer（需确保它能处理）
-    // 如果 RichTextRenderer 无法处理，可以降级提取纯文本
     useRichTextRenderer = true;
   } else {
-    // 其他情况，转为字符串
     contentHtml = String(blog.content);
   }
 }
 ---
 
-<BaseLayout title={blog.title} description={blog.description || blog.title} pageType="article" locale={locale} image={coverImageUrl ? { src: coverImageUrl, alt: coverAlt } : undefined}>
+<BaseLayout
+  title={blog.title}
+  description={blog.description || blog.title}
+  pageType="article"
+  locale={locale}
+  image={coverImageUrl ? { src: coverImageUrl, alt: coverAlt } : config.image}
+>
   <article class="max-w-3xl mx-auto">
     <header class="mb-8">
       <h1 class="text-4xl md:text-5xl font-bold mb-4">{blog.title}</h1>
-
       <div class="flex flex-wrap items-center gap-4 text-gray-600 dark:text-gray-400 mb-6">
         <div class="flex items-center"><span class="font-medium">{blog.author}</span></div>
         <div class="flex items-center">
           <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clip-rule="evenodd" /></svg>
-          <time datetime={blog.publishedAt}>
-            {new Date(blog.publishedAt).toLocaleDateString(locale, { year: 'numeric', month: 'long', day: 'numeric' })}
-          </time>
+          <time datetime={blog.publishedAt}>{new Date(blog.publishedAt).toLocaleDateString(locale, { year: 'numeric', month: 'long', day: 'numeric' })}</time>
         </div>
         <div class="flex items-center">
           <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd" /></svg>
           <span>{Math.ceil((blog.content || []).length / 100)} {translations.minRead}</span>
         </div>
-
         {categories.length > 0 && (
           <div class="flex items-center gap-2">
             <span class="text-sm text-gray-500 dark:text-gray-400">{translations.categories}:</span>
@@ -114,7 +94,6 @@ if (blog.content) {
           </div>
         )}
       </div>
-
       {coverImageUrl && (
         <div class="mb-8">
           <img src={coverImageUrl} alt={coverAlt} width={1200} height={630} class="w-full h-auto max-h-96 object-cover rounded-xl shadow-lg" loading="eager" decoding="async" />
@@ -123,7 +102,6 @@ if (blog.content) {
       )}
     </header>
 
-    <!-- 文章内容渲染 -->
     <div class="prose dark:prose-invert prose-lg max-w-none mb-12">
       {useRichTextRenderer ? (
         <RichTextRenderer content={blog.content} />
@@ -147,7 +125,6 @@ if (blog.content) {
           </div>
         </div>
       )}
-
       <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <a href={getLocalizedPath(locale, '/blog')} class="inline-flex items-center text-blue-600 dark:text-blue-400 hover:underline font-medium">
           <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>

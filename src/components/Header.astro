@@ -1,6 +1,5 @@
 ---
 // src/components/Header.astro
-import siteConfig from '@/site-config';
 import ThemeToggle from './ThemeToggle.vue';
 import Menu from './Menu.astro';
 import { getMenuTree } from '@/lib/menu';
@@ -10,29 +9,31 @@ import { locales } from '@/generated/i18n-config';
 import { getAssetPath, getLocalizedPath, BASE_URL } from '@/lib/env';
 
 interface Props {
-  currentLocale?: Locale;
+  currentLocale: Locale;
+  config: {
+    title: string;
+    header: {
+      logo: { src: string; alt: string };
+      navLinks: Array<{ text: string; href: string }>;
+    };
+    socialLinks: Array<{ text: string; href: string; icon: string; header?: string | boolean }>;
+  };
 }
 
-const { currentLocale = 'en' as Locale } = Astro.props;
+const { currentLocale, config } = Astro.props;
 
 // ========== 动态菜单逻辑 ==========
 const menuTree = getMenuTree(currentLocale);
 const buttonItems = menuTree.filter(item => item.isButton);
 const navItems = menuTree.filter(item => !item.isButton);
 
-// 降级方案：当动态菜单为空时，使用站点配置的硬编码链接
-const getFallbackLinks = () => {
-  const baseLinks = siteConfig.header.navLinks || [];
-  const baseUrl = Astro.site?.origin || 'http://localhost';
-  return siteConfig.header.navLinks.map(link => ({
-    text: link.text,
-    href: getLocalizedUrl(new URL(link.href, baseUrl), currentLocale),
-  }));
-};
-const fallbackLinks = getFallbackLinks();
-// ========== 动态菜单逻辑结束 ==========
+// 后备链接（当动态菜单为空时，使用 global 中定义的 nav_links）
+const fallbackLinks = config.header.navLinks.map(link => ({
+  text: link.text,
+  href: getLocalizedUrl(new URL(link.href, Astro.url.origin), currentLocale),
+}));
 
-const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') || 
+const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
                    Astro.url.pathname === `${BASE_URL.replace(/\/$/, '')}/${currentLocale}`;
 ---
 
@@ -48,22 +49,22 @@ const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
         <a
           href={getLocalizedUrl(new URL('/', Astro.url.origin), currentLocale)}
           class="flex items-center space-x-3 group"
-          aria-label={siteConfig.title}
+          aria-label={config.title}
         >
           <img
             width="32"
             height="32"
-            src={getAssetPath(siteConfig.header.logo.src)}
-            alt={siteConfig.header.logo.alt}
+            src={getAssetPath(config.header.logo.src)}
+            alt={config.header.logo.alt}
             class="w-8 h-8 transition-transform group-hover:scale-110"
           />
           {isHomePage ? (
             <span class="font-semibold text-lg hidden md:inline">
-              {siteConfig.title}
+              {config.title}
             </span>
           ) : (
             <span class="font-semibold text-lg hidden md:inline text-gray-600 dark:text-gray-400">
-              {siteConfig.title}
+              {config.title}
             </span>
           )}
         </a>
@@ -91,7 +92,6 @@ const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
         {buttonItems.map(item => {
           let href = item.url;
           if (href && !href.startsWith('http')) {
-            // 使用 getLocalizedPath 生成包含 base 和 locale 的路径
             href = getLocalizedPath(currentLocale, href);
           }
           return (
@@ -130,7 +130,7 @@ const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
             );
           })}
 
-          {siteConfig.socialLinks
+          {config.socialLinks
             .filter(link => link.header && link.href)
             .map((link) => (
               <a
@@ -190,11 +190,11 @@ const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
         <img
           width="32"
           height="32"
-          src={getAssetPath(siteConfig.header.logo.src)}
-          alt={siteConfig.header.logo.alt}
+          src={getAssetPath(config.header.logo.src)}
+          alt={config.header.logo.alt}
           class="w-8 h-8"
         />
-        <span class="font-semibold text-lg">{siteConfig.title}</span>
+        <span class="font-semibold text-lg">{config.title}</span>
       </a>
       <button
         class="text-gray-700 dark:text-gray-300 p-2"
@@ -277,7 +277,7 @@ const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
 
       <!-- 社交链接（移动端） -->
       <div class="flex flex-wrap gap-4 px-4">
-        {siteConfig.socialLinks
+        {config.socialLinks
           .filter(link => link.header && link.href)
           .map((link) => (
             <a

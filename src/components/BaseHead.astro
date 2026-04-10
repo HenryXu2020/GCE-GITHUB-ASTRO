@@ -1,48 +1,40 @@
 ---
-import siteConfig from '@/site-config';
-import type { Locale } from '@/types';
+import type { Locale } from '@/generated/i18n-config';
 import { getLocalizedUrl } from '@/i18n/utils';
 import { locales } from '@/generated/i18n-config';
 
 interface Props {
-  title?: string;
-  description?: string;
+  title: string;
+  description: string;
   pageType?: 'article' | 'website';
-  locale?: Locale;
-  url?: URL;
-  image?: {
-    src: string;
-    alt: string;
+  locale: Locale;
+  url: URL;
+  image?: { src: string; alt: string };
+  config: {
+    title: string;
+    description: string;
+    image: { src: string; alt: string };
+    author: string;
+    theme_color_light?: string;
+    theme_color_dark?: string;
+    twitter_card_type?: string;
+    fb_app_id?: string;
+    google_analytics_id?: string;
+    umami_website_id?: string;
   };
 }
 
-const {
-  title = siteConfig.title,
-  description = siteConfig.description,
-  pageType = 'website',
-  locale = 'en',
-  url = Astro.url,
-  image = siteConfig.image,
-} = Astro.props;
-
-// 优化 D8：确保 currentLocale 是有效的 Locale
-const rawLocale = Astro.currentLocale || locale;
-const currentLocale = locales.includes(rawLocale as Locale) ? rawLocale as Locale : 'en';
-
-const siteUrl = Astro.site?.origin || 'https://astro.example.com';
-
-// 优化 D7：预计算替代语言链接，避免每次渲染重复计算
+const { title, description, pageType = 'website', locale, url, image, config } = Astro.props;
+const siteUrl = Astro.site?.origin || 'https://example.com';
+const canonicalUrl = new URL(url.pathname, siteUrl).toString();
+const imageUrl = image?.src || config.image.src;
 const alternateUrls = locales.map((targetLocale: Locale) => {
   const localizedUrl = getLocalizedUrl(url, targetLocale);
   const fullUrl = new URL(localizedUrl, siteUrl).toString();
-  return {
-    lang: targetLocale,
-    href: fullUrl,
-  };
+  return { lang: targetLocale, href: fullUrl };
 });
-
-const canonicalUrl = new URL(url.pathname, siteUrl).toString();
-const imageUrl = image ? new URL(image.src, siteUrl).toString() : undefined;
+const themeColorLight = config.theme_color_light || '#ffffff';
+const themeColorDark = config.theme_color_dark || '#0f172a';
 ---
 
 <head>
@@ -50,55 +42,64 @@ const imageUrl = image ? new URL(image.src, siteUrl).toString() : undefined;
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="generator" content="Astro v5.6.2" />
 
-  <!-- 基础Meta -->
   <title>{title}</title>
   <meta name="description" content={description} />
-  <meta name="author" content={siteConfig.author} />
+  <meta name="author" content={config.author} />
 
-  <!-- Open Graph -->
   <meta property="og:title" content={title} />
   <meta property="og:description" content={description} />
   <meta property="og:type" content={pageType} />
   <meta property="og:url" content={canonicalUrl} />
-  <meta property="og:site_name" content={siteConfig.title} />
-  <meta property="og:locale" content={currentLocale === 'es' ? 'es_ES' : 'en_US'} />
+  <meta property="og:site_name" content={config.title} />
+  <meta property="og:locale" content={locale === 'es' ? 'es_ES' : 'en_US'} />
 
   {imageUrl && (
     <>
       <meta property="og:image" content={imageUrl} />
-      <meta property="og:image:alt" content={image.alt} />
+      <meta property="og:image:alt" content={image?.alt || config.image.alt} />
       <meta property="og:image:width" content="1200" />
       <meta property="og:image:height" content="630" />
     </>
   )}
 
-  <!-- Twitter Card -->
-  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:card" content={config.twitter_card_type || 'summary_large_image'} />
   <meta name="twitter:title" content={title} />
   <meta name="twitter:description" content={description} />
   {imageUrl && <meta name="twitter:image" content={imageUrl} />}
 
-  <!-- Hreflang -->
+  {config.fb_app_id && <meta property="fb:app_id" content={config.fb_app_id} />}
+
+  {config.google_analytics_id && (
+    <>
+      <script async src={`https://www.googletagmanager.com/gtag/js?id=${config.google_analytics_id}`}></script>
+      <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag(){dataLayer.push(arguments);}
+        gtag('js', new Date());
+        gtag('config', '${config.google_analytics_id}');
+      </script>
+    </>
+  )}
+
+  {config.umami_website_id && (
+    <script async defer src="https://analytics.umami.is/script.js" data-website-id={config.umami_website_id}></script>
+  )}
+
   {alternateUrls.map(({ lang, href }) => (
     <link rel="alternate" hreflang={lang} href={href} key={lang} />
   ))}
   <link rel="alternate" hreflang="x-default" href={alternateUrls.find(a => a.lang === 'en')?.href || canonicalUrl} />
 
-  <!-- Canonical -->
   <link rel="canonical" href={canonicalUrl} />
 
-  <!-- 图标 -->
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="alternate icon" href="/favicon.ico" type="image/x-icon" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180" />
 
-  <!-- RSS -->
-  <link rel="alternate" type="application/rss+xml" href="/rss.xml" title={`${siteConfig.title} RSS Feed`} />
+  <link rel="alternate" type="application/rss+xml" href="/rss.xml" title={`${config.title} RSS Feed`} />
 
-  <!-- 主题颜色 -->
-  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />
-  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f172a" />
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content={themeColorLight} />
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content={themeColorDark} />
 
-  <!-- 预加载关键资源 -->
   <link rel="preload" href="/favicon.svg" as="image" type="image/svg+xml" />
 </head>

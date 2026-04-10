@@ -7,7 +7,7 @@ import Footer from '@/components/Footer.vue';
 import ScrollToTop from '@/components/ScrollToTop.vue';
 import type { Locale, FooterData } from '@/types';
 import { getSingleContent } from '@/lib/content-cache';
-import { defaultFooter } from '@/lib/footer-default';
+import { getSiteConfig } from '@/site-config';
 
 interface Props {
   title?: string;
@@ -19,25 +19,27 @@ interface Props {
 
 const { title, description, pageType = 'website', locale, image } = Astro.props;
 const currentLocale = (Astro.currentLocale || locale || 'en') as Locale;
-const currentUrl = Astro.url;
-
+const config = getSiteConfig(currentLocale);
 const cachedFooter = getSingleContent<FooterData>('footer', currentLocale);
-const isValid = cachedFooter?.data && cachedFooter.__meta?.status === 'ok';
-const footerData = isValid ? cachedFooter.data : defaultFooter;
-
-if (!isValid) {
-  console.warn(`[Footer] Invalid or missing cache for locale "${currentLocale}", using default fallback.`);
-}
+const footerData = cachedFooter?.data ?? null;
 ---
 
 <!doctype html>
 <html lang={currentLocale}>
   <head>
-    <BaseHead title={title} description={description} pageType={pageType} locale={currentLocale} url={currentUrl} image={image} />
+    <BaseHead
+      title={title || config.title}
+      description={description || config.description}
+      pageType={pageType}
+      locale={currentLocale}
+      url={Astro.url}
+      image={image || config.image}
+      config={config}
+    />
     <ViewTransitions />
   </head>
   <body class="bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 min-h-screen font-sans antialiased transition-colors duration-300">
-    <Header currentLocale={currentLocale} />
+    <Header currentLocale={currentLocale} config={config} />
     <main class="min-h-screen pt-20 pb-16" transition:animate={fade({ duration: '0.4s' })}>
       <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <slot />

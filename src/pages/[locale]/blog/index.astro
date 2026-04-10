@@ -6,18 +6,18 @@ import type { Blog } from '@/generated/graphql-types';
 import { t } from '@/i18n/dict';
 import { Image } from 'astro:assets';
 import { getFullImageUrl, getLocalizedPath } from '@/lib/env';
+import { getSiteConfig } from '@/site-config';
 
 export async function getStaticPaths() {
-  return locales.map((locale) => ({
-    params: { locale },
-  }));
+  return locales.map((locale) => ({ params: { locale } }));
 }
 
 const { locale } = Astro.params as { locale: Locale };
+const config = getSiteConfig(locale);
 const blogs = getContentList<Blog>('blog', locale);
 ---
 
-<BaseLayout title={t(locale, 'blog.title')} locale={locale}>
+<BaseLayout title={t(locale, 'blog.title')} description={`${config.title} - ${t(locale, 'blog.title')}`} locale={locale}>
   <div class="container mx-auto px-4 py-8">
     <header class="mb-12">
       <h1 class="text-5xl font-bold mb-4">{t(locale, 'blog.title')}</h1>
@@ -31,7 +31,6 @@ const blogs = getContentList<Blog>('blog', locale);
     ) : (
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
         {blogs.map((blog) => {
-          // 处理 cover 数组：取第一个图片对象
           const coverItem = Array.isArray(blog.cover) ? blog.cover[0] : blog.cover;
           const coverImageUrl = getFullImageUrl(coverItem?.url);
           const coverAlt = coverItem?.alternativeText || blog.title;
@@ -55,11 +54,7 @@ const blogs = getContentList<Blog>('blog', locale);
                     </>
                   )}
                   <time datetime={blog.publishedAt}>
-                    {new Date(blog.publishedAt).toLocaleDateString(locale, {
-                      year: 'numeric',
-                      month: 'short',
-                      day: 'numeric',
-                    })}
+                    {new Date(blog.publishedAt).toLocaleDateString(locale, { year: 'numeric', month: 'short', day: 'numeric' })}
                   </time>
                 </div>
                 {blog.excerpt && <p class="text-gray-700 dark:text-gray-300 mb-4 line-clamp-3">{blog.excerpt}</p>}

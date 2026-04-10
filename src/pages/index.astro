@@ -1,0 +1,83 @@
+---
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import { locales, type Locale } from '@/generated/i18n-config';
+import { getContentList } from '@/lib/content-cache';
+import type { Blog } from '@/generated/graphql-types';
+import { t } from '@/i18n/dict';
+import { Image } from 'astro:assets';
+import { getFullImageUrl, getLocalizedPath } from '@/lib/env';
+import { getSiteConfig } from '@/site-config';
+
+export async function getStaticPaths() {
+  return locales.map((locale) => ({ params: { locale } }));
+}
+
+const { locale } = Astro.params as { locale: Locale };
+const config = getSiteConfig(locale);
+const allBlogs = getContentList<Blog>('blog', locale);
+const latestBlogs = allBlogs.slice(0, 3);
+---
+
+<BaseLayout title={config.title} description={config.description} locale={locale}>
+  <div class="space-y-12">
+    <section class="text-center py-12">
+      <h1 class="text-4xl md:text-5xl font-bold mb-4">{t(locale, 'home.welcome')}</h1>
+      <p class="text-xl text-gray-600 dark:text-gray-300 mb-6">{config.subtitle}</p>
+      <p class="text-gray-700 dark:text-gray-300 max-w-2xl mx-auto">{config.description}</p>
+    </section>
+
+    <section>
+      <h2 class="text-3xl font-bold mb-8">{t(locale, 'common.recentPosts')}</h2>
+      {latestBlogs.length > 0 ? (
+        <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+          {latestBlogs.map((blog) => {
+            const coverItem = Array.isArray(blog.cover) ? blog.cover[0] : blog.cover;
+            const coverImageUrl = getFullImageUrl(coverItem?.url);
+            const coverAlt = coverItem?.alternativeText || blog.title;
+            const blogUrl = getLocalizedPath(locale, `/blog/${blog.slug}`);
+            return (
+              <article key={blog.documentId} class="bg-white dark:bg-gray-800 rounded-lg shadow-md overflow-hidden hover:shadow-lg transition-shadow">
+                {coverImageUrl && (
+                  <a href={blogUrl}>
+                    <Image src={coverImageUrl} alt={coverAlt} width={600} height={400} class="w-full h-48 object-cover" loading="lazy" decoding="async" format="webp" />
+                  </a>
+                )}
+                <div class="p-6">
+                  <h3 class="text-xl font-semibold mb-2">
+                    <a href={blogUrl} class="text-gray-900 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400 transition-colors">{blog.title}</a>
+                  </h3>
+                  <div class="text-sm text-gray-500 dark:text-gray-400 mb-3">
+                    <span>{blog.author}</span>
+                    <span class="mx-2">•</span>
+                    <time datetime={blog.publishedAt}>{new Date(blog.publishedAt).toLocaleDateString(locale, { year: 'numeric', month: 'short', day: 'numeric' })}</time>
+                  </div>
+                  {blog.excerpt && <p class="text-gray-600 dark:text-gray-300 mb-4">{blog.excerpt}</p>}
+                  <a href={blogUrl} class="inline-flex items-center text-blue-600 dark:text-blue-400 hover:underline font-medium">{t(locale, 'common.readMore')}</a>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <p class="text-gray-600 dark:text-gray-400 text-center py-8">{t(locale, 'common.noPosts')}</p>
+      )}
+      {latestBlogs.length > 0 && (
+        <div class="text-center mt-8">
+          <a href={getLocalizedPath(locale, '/blog')} class="inline-flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 transition-colors">{t(locale, 'blog.allPosts')}</a>
+        </div>
+      )}
+    </section>
+
+    <section class="text-center pt-8 border-t border-gray-200 dark:border-gray-700">
+      <h3 class="text-2xl font-bold mb-6">{t(locale, 'home.findMeOn')}</h3>
+      <div class="flex flex-wrap justify-center gap-4">
+        {config.socialLinks.filter(link => link.href).map((link) => (
+          <a key={link.text} href={link.href} target="_blank" rel="noopener noreferrer" class="inline-flex items-center space-x-2 px-4 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors" aria-label={link.text}>
+            <i class={link.icon}></i>
+            <span>{link.text}</span>
+          </a>
+        ))}
+      </div>
+    </section>
+  </div>
+</BaseLayout>

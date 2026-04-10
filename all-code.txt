@@ -100,14 +100,19 @@ jobs:
       - name: Validate cache and fallback
         run: |
           mkdir -p src/generated/cache
+          # 检查缓存清单是否存在且有效
           if [ ! -f src/generated/cache/MANIFEST.json ]; then
             echo "::warning::Cache manifest missing, will fallback to full build"
             echo "FORCE_FULL_CACHE=true" >> $GITHUB_ENV
-          else
-            if ! jq -e '.version' src/generated/cache/MANIFEST.json > /dev/null 2>&1; then
-              echo "::warning::Cache manifest invalid, will fallback to full build"
-              echo "FORCE_FULL_CACHE=true" >> $GITHUB_ENV
-            fi
+          elif ! jq -e '.version' src/generated/cache/MANIFEST.json > /dev/null 2>&1; then
+            echo "::warning::Cache manifest invalid, will fallback to full build"
+            echo "FORCE_FULL_CACHE=true" >> $GITHUB_ENV
+          fi
+          # 新增：检查 global 缓存目录是否至少有一个 JSON 文件
+          GLOBAL_CACHE_DIR="src/generated/cache/global"
+          if [ ! -d "$GLOBAL_CACHE_DIR" ] || [ -z "$(find "$GLOBAL_CACHE_DIR" -maxdepth 1 -name '*.json' -print -quit 2>/dev/null)" ]; then
+            echo "::warning::Global cache directory missing or contains no JSON files, will fallback to full build"
+            echo "FORCE_FULL_CACHE=true" >> $GITHUB_ENV
           fi
       - name: Ensure i18n config exists
         run: |
@@ -277,8 +282,10 @@ import path from 'path';
 
 const { locales, defaultLocale } = getConfig();
 
-// 站点基础 URL，优先使用环境变量，否则使用实际部署域名
-const SITE_URL = process.env.SITE_URL || 'https://astro.lactisoles.com';
+// 站点根域名（不含子路径）
+const SITE = process.env.SITE_URL || 'https://henryxu2020.github.io';
+// 部署子路径（例如仓库名）
+const BASE = process.env.BASE_URL || '/GCE-GITHUB-ASTRO/';
 
 // 读取内容缓存，获取所有博客的 slug 用于生成 customPages
 let blogPaths: string[] = [];
@@ -289,17 +296,17 @@ try {
     for (const file of files) {
       if (!file.endsWith('.json')) continue;
       const locale = file.replace(/\.json$/, '');
-      if (!locales.includes(locale)) continue; // 确保是有效语言
+      if (!locales.includes(locale)) continue;
 
       const filePath = path.join(cacheDir, file);
-      // [修复] 缓存文件现在是对象格式（以 documentId 为键），需要转换为数组
       const dataMap = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      const blogs = Object.values(dataMap); // 对象 → 数组
+      const blogs = Object.values(dataMap);
       for (const blog of blogs) {
-        // 增加空值判断，确保 blog 对象存在且包含 slug
         if (blog && typeof blog === 'object' && blog.slug) {
+          // 生成相对路径（含语言前缀）
           const relativePath = `/${locale}/blog/${blog.slug}/`;
-          const fullUrl = new URL(relativePath, SITE_URL).toString();
+          // 拼接完整 URL：site + base + relativePath
+          const fullUrl = new URL(BASE + relativePath, SITE).toString();
           blogPaths.push(fullUrl);
         }
       }
@@ -311,10 +318,9 @@ try {
   console.warn('⚠️ Failed to read blog cache for sitemap custom pages:', error);
 }
 
-// 过滤无效的 URL，避免破坏 sitemap
 const validBlogPaths = blogPaths.filter(path => {
   try {
-    new URL(path); // 验证是否为有效 URL
+    new URL(path);
     return true;
   } catch {
     console.warn(`⚠️ Invalid sitemap path: ${path}`);
@@ -324,7 +330,8 @@ const validBlogPaths = blogPaths.filter(path => {
 
 // https://astro.build/config
 export default defineConfig({
-  site: SITE_URL,
+  site: SITE,          // 仅根域名
+  base: BASE,          // 子路径
 
   server: {
     port: 1977,
@@ -3363,264 +3370,6 @@ const isHomePage = Astro.url.pathname === BASE_URL.replace(/\/$/, '') ||
   });
 </script>
 
-## 文件：src/components/Header.vue
-<!-- src/components/Header.vue -->
-<script lang="ts" setup>
-import { computed } from 'vue'
-import ThemeToggle from './ThemeToggle.vue'
-import type { Locale } from '@/generated/i18n-config'
-import { getLocalizedUrl, getLanguageName } from '@/i18n/utils'
-import { locales } from '@/generated/i18n-config'
-import { getAssetPath, getLocalizedPath, BASE_URL } from '@/lib/env'
-import { getSiteConfig } from '@/site-config'
-
-const props = defineProps<{
-  currentLocale: Locale
-}>()
-
-const currentLocale = props.currentLocale
-const config = getSiteConfig(currentLocale)
-
-const logoUrl = computed(() => getAssetPath(config.header.logo.src))
-const isHomePage = computed(() => {
-  if (typeof window !== 'undefined') {
-    const path = window.location.pathname
-    const base = BASE_URL.replace(/\/$/, '')
-    return path === base || path === `${base}/${currentLocale}`
-  }
-  return false
-})
-
-const getHref = (url: string) => {
-  if (url.startsWith('http')) return url
-  return getLocalizedPath(currentLocale, url)
-}
-</script>
-
-<template>
-  <header
-    id="header"
-    class="fixed top-0 left-0 right-0 bg-white/90 dark:bg-gray-900/90 backdrop-blur-sm z-50 border-b border-gray-200 dark:border-gray-800"
-  >
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div class="flex justify-between items-center h-16">
-        <!-- Logo -->
-        <div class="flex items-center">
-          <a
-            :href="getLocalizedUrl(new URL('/', window.location.origin), currentLocale)"
-            class="flex items-center space-x-3 group"
-            :aria-label="config.title"
-          >
-            <img
-              width="32"
-              height="32"
-              :src="logoUrl"
-              :alt="config.header.logo.alt"
-              class="w-8 h-8 transition-transform group-hover:scale-110"
-            />
-            <span v-if="isHomePage" class="font-semibold text-lg hidden md:inline">
-              {{ config.title }}
-            </span>
-            <span v-else class="font-semibold text-lg hidden md:inline text-gray-600 dark:text-gray-400">
-              {{ config.title }}
-            </span>
-          </a>
-        </div>
-
-        <!-- Desktop Navigation -->
-        <nav class="hidden md:flex items-center space-x-2">
-          <!-- 动态菜单应通过 Menu 组件渲染，此处因简化版本未集成 Menu，故留空。
-               实际项目中建议统一使用 Header.astro -->
-          <div class="text-gray-400 dark:text-gray-500 text-sm italic px-3">
-            <!-- 菜单由 Header.astro 处理，此 Vue 组件仅为备用 -->
-          </div>
-
-          <!-- 语言切换器 + 社交链接 + 主题切换器 -->
-          <div class="flex items-center space-x-3 ml-4 pl-4 border-l border-gray-200 dark:border-gray-700">
-            <a
-              v-for="locale in locales"
-              :key="locale"
-              :href="getLocalizedUrl(new URL(window.location.pathname, window.location.origin), locale as Locale)"
-              :class="[
-                'px-2.5 py-1.5 rounded text-xs font-semibold transition-all',
-                currentLocale === locale
-                  ? 'bg-blue-500 text-white shadow-sm'
-                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800'
-              ]"
-              :aria-label="`Switch to ${getLanguageName(locale as Locale)}`"
-              :title="getLanguageName(locale as Locale)"
-            >
-              {{ (locale as string).toUpperCase() }}
-            </a>
-
-            <a
-              v-for="link in config.socialLinks.filter(l => l.header && l.href)"
-              :key="link.text"
-              :href="link.href"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="text-gray-600 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
-              :aria-label="link.text"
-              :title="link.text"
-            >
-              <i :class="`${link.icon} text-lg`"></i>
-            </a>
-
-            <a
-              v-if="config.rss_enabled"
-              :href="getAssetPath('/rss.xml')"
-              target="_blank"
-              class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400 transition-colors"
-              aria-label="RSS Feed"
-              title="RSS Feed"
-            >
-              <i class="i-ri-rss-line text-lg"></i>
-            </a>
-
-            <ThemeToggle />
-          </div>
-        </nav>
-
-        <!-- Mobile Menu Button -->
-        <div class="md:hidden">
-          <button
-            id="mobile-menu-button"
-            class="text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 p-2"
-            aria-label="Open menu"
-            aria-controls="mobile-menu"
-            aria-expanded="false"
-          >
-            <i class="i-ri-menu-2-line text-xl"></i>
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Mobile Menu (简化实现，实际应使用完整结构) -->
-    <div
-      id="mobile-menu"
-      class="md:hidden hidden fixed inset-0 bg-white dark:bg-gray-900 z-50 overflow-y-auto"
-    >
-      <div class="flex justify-between items-center p-4 border-b border-gray-200 dark:border-gray-800">
-        <a
-          :href="getLocalizedUrl(new URL('/', window.location.origin), currentLocale)"
-          class="flex items-center space-x-3"
-          data-close-mobile-menu
-        >
-          <img :src="logoUrl" :alt="config.header.logo.alt" class="w-8 h-8" />
-          <span class="font-semibold text-lg">{{ config.title }}</span>
-        </a>
-        <button
-          class="text-gray-700 dark:text-gray-300 p-2"
-          aria-label="Close menu"
-          data-close-mobile-menu
-        >
-          <i class="i-ri-close-line text-2xl"></i>
-        </button>
-      </div>
-
-      <div class="p-4">
-        <!-- 菜单项由 Menu 组件渲染，此处省略，保持与 Header.astro 一致 -->
-        <div class="text-gray-400 dark:text-gray-500 text-sm italic py-3 px-4">
-          Menu (use Header.astro for full menu)
-        </div>
-
-        <!-- 语言切换器（移动端） -->
-        <div class="mb-6 pt-4 border-t border-gray-200 dark:border-gray-700">
-          <h3 class="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3 px-4">
-            {{ currentLocale === 'en' ? 'Language' : currentLocale === 'es' ? 'Idioma' : 'Langue' }}
-          </h3>
-          <div class="space-y-2">
-            <a
-              v-for="locale in locales"
-              :key="locale"
-              :href="getLocalizedUrl(new URL(window.location.pathname, window.location.origin), locale as Locale)"
-              :class="[
-                'flex items-center justify-between px-4 py-3 rounded-lg transition-colors',
-                currentLocale === locale
-                  ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
-                  : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
-              ]"
-              data-close-mobile-menu
-            >
-              <span class="font-medium">{{ getLanguageName(locale as Locale) }}</span>
-              <span class="text-sm opacity-75">{{ (locale as string).toUpperCase() }}</span>
-            </a>
-          </div>
-        </div>
-
-        <!-- 社交链接（移动端） -->
-        <div class="flex flex-wrap gap-4 px-4">
-          <a
-            v-for="link in config.socialLinks.filter(l => l.header && l.href)"
-            :key="link.text"
-            :href="link.href"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="text-gray-600 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400"
-            :aria-label="link.text"
-            :title="link.text"
-            data-close-mobile-menu
-          >
-            <i :class="`${link.icon} text-xl`"></i>
-          </a>
-          <a
-            v-if="config.rss_enabled"
-            :href="getAssetPath('/rss.xml')"
-            target="_blank"
-            class="text-gray-600 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400"
-            aria-label="RSS Feed"
-            title="RSS Feed"
-            data-close-mobile-menu
-          >
-            <i class="i-ri-rss-line text-xl"></i>
-          </a>
-        </div>
-      </div>
-    </div>
-  </header>
-</template>
-
-<script lang="ts">
-// 移动端菜单交互逻辑
-if (typeof document !== 'undefined') {
-  document.addEventListener('DOMContentLoaded', () => {
-    const menuButton = document.getElementById('mobile-menu-button')
-    const mobileMenu = document.getElementById('mobile-menu')
-    const closeElements = document.querySelectorAll('[data-close-mobile-menu]')
-
-    const toggleMenu = () => {
-      if (!mobileMenu) return
-      const isHidden = mobileMenu.classList.contains('hidden')
-      mobileMenu.classList.toggle('hidden', !isHidden)
-      menuButton?.setAttribute('aria-expanded', String(isHidden))
-    }
-
-    const closeMenu = () => {
-      mobileMenu?.classList.add('hidden')
-      menuButton?.setAttribute('aria-expanded', 'false')
-    }
-
-    menuButton?.addEventListener('click', toggleMenu)
-    closeElements.forEach(el => el.addEventListener('click', closeMenu))
-
-    document.addEventListener('click', (event) => {
-      if (!mobileMenu || mobileMenu.classList.contains('hidden')) return
-      if (!mobileMenu.contains(event.target as Node) && !menuButton?.contains(event.target as Node)) {
-        closeMenu()
-      }
-    })
-
-    document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape' && mobileMenu && !mobileMenu.classList.contains('hidden')) {
-        closeMenu()
-        menuButton?.focus()
-      }
-    })
-  })
-}
-</script>
-
 ## 文件：src/components/Menu.astro
 ---
 // src/components/Menu.astro
@@ -5317,6 +5066,7 @@ export async function GET(context: APIContext) {
 ## 文件：src/site-config.ts
 // src/site-config.ts
 import type { Locale } from '@/generated/i18n-config';
+import { defaultLocale } from '@/generated/i18n-config';
 import { getSingleContent } from '@/lib/content-cache';
 import type { Global } from '@/generated/graphql-types';
 import { getFullImageUrl } from '@/lib/env';
@@ -5330,16 +5080,23 @@ function normalizeSocialLink(link: NonNullable<Global['social_links']>[0]) {
   };
 }
 
-// 该函数已不再使用，保留以备后续可能的需求
-// function normalizeNavLink(link: { label: string; url: string; is_button?: boolean }) {
-//   return { text: link.label, href: link.url };
-// }
-
 export function getSiteConfig(locale: Locale) {
-  const globalData = getSingleContent<Global>('global', locale);
+  // 尝试获取当前语言的配置
+  let globalData = getSingleContent<Global>('global', locale);
+
+  // 如果当前语言没有数据，回退到默认语言
   if (!globalData?.data) {
-    throw new Error(`[site-config] No global data for locale "${locale}".`);
+    console.warn(`[site-config] Global data missing for locale "${locale}", falling back to "${defaultLocale}"`);
+    globalData = getSingleContent<Global>('global', defaultLocale);
   }
+
+  // 若默认语言也没有数据，则无法继续（此时抛出错误是合理的）
+  if (!globalData?.data) {
+    throw new Error(
+      `[site-config] No global data available for locale "${locale}" or default locale "${defaultLocale}".`
+    );
+  }
+
   const data = globalData.data;
 
   return {

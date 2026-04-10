@@ -1,4 +1,5 @@
 ---
+// src/layouts/BaseLayout.astro
 import { fade } from 'astro:transitions';
 import { ViewTransitions } from 'astro:transitions';
 import BaseHead from '@/components/BaseHead.astro';
@@ -45,7 +46,8 @@ const footerData = cachedFooter?.data ?? null;
         <slot />
       </div>
     </main>
-    <Footer footer={footerData} />
+    <!-- 将 currentLocale 传递给 Footer 组件，用于生成本地化链接 -->
+    <Footer footer={footerData} currentLocale={currentLocale} client:load />
     <ScrollToTop client:load />
   </body>
 </html>

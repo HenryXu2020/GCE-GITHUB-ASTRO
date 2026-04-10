@@ -10,8 +10,10 @@ import path from 'path';
 
 const { locales, defaultLocale } = getConfig();
 
-// 站点基础 URL，优先使用环境变量，否则使用实际部署域名
-const SITE_URL = process.env.SITE_URL || 'https://astro.lactisoles.com';
+// 站点基础 URL，必须与 GitHub Pages 部署地址一致
+const SITE_URL = process.env.SITE_URL || 'https://henryxu2020.github.io/GCE-GITHUB-ASTRO/';
+// 添加 base 路径，对应仓库名
+const BASE_URL = process.env.BASE_URL || '/GCE-GITHUB-ASTRO/';
 
 // 读取内容缓存，获取所有博客的 slug 用于生成 customPages
 let blogPaths: string[] = [];

@@ -29,10 +29,11 @@
     "validate-schema": "npm run analyze-schema && npm run generate-types-dynamic && npm run generate-config",
     "validate-dynamic": "npm run generate-dynamic && npm run codegen-dynamic && npm run generate-config && echo '✅ Dynamic architecture validated'",
     "validate-generated": "if [ -f src/generated/all-queries.graphql ] && [ -f src/generated/graphql-types.ts ]; then echo '✅ Generated files exist'; else echo '❌ Generated files missing'; exit 1; fi",
-    "build-cache": "tsx scripts/build-content-cache.ts",
+    "build-cache": "tsx scripts/build-content-cache.ts && npm run generate-safelist",
     "update-cache": "tsx scripts/update-cache.ts",
     "update-cache-entry": "tsx scripts/update-cache-entry.ts",
-    "validate-footer-types": "tsx scripts/validate-footer-types.ts"
+    "validate-footer-types": "tsx scripts/validate-footer-types.ts",
+    "generate-safelist": "tsx scripts/generate-uno-safelist.ts"
   },
   "dependencies": {
     "@astrojs/mdx": "^4.2.4",

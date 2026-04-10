@@ -35,5 +35,7 @@ else
     npm run codegen-dynamic
     npm run generate-config
     npm run build-cache
+    npm run generate-safelist
 fi
 
+npx build astro

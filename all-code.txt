@@ -439,8 +439,10 @@ else
     npm run codegen-dynamic
     npm run generate-config
     npm run build-cache
+    npm run generate-safelist
 fi
 
+npx build astro
 
 ## 文件：codegen-dynamic.config.js
 // codegen-dynamic.config.js
@@ -627,10 +629,11 @@ export default {
     "validate-schema": "npm run analyze-schema && npm run generate-types-dynamic && npm run generate-config",
     "validate-dynamic": "npm run generate-dynamic && npm run codegen-dynamic && npm run generate-config && echo '✅ Dynamic architecture validated'",
     "validate-generated": "if [ -f src/generated/all-queries.graphql ] && [ -f src/generated/graphql-types.ts ]; then echo '✅ Generated files exist'; else echo '❌ Generated files missing'; exit 1; fi",
-    "build-cache": "tsx scripts/build-content-cache.ts",
+    "build-cache": "tsx scripts/build-content-cache.ts && npm run generate-safelist",
     "update-cache": "tsx scripts/update-cache.ts",
     "update-cache-entry": "tsx scripts/update-cache-entry.ts",
-    "validate-footer-types": "tsx scripts/validate-footer-types.ts"
+    "validate-footer-types": "tsx scripts/validate-footer-types.ts",
+    "generate-safelist": "tsx scripts/generate-uno-safelist.ts"
   },
   "dependencies": {
     "@astrojs/mdx": "^4.2.4",
@@ -2565,6 +2568,57 @@ function main() {
 }
 
 main();
+
+## 文件：scripts/generate-uno-safelist.ts
+import { readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
+import { join } from 'path';
+
+const CACHE_DIR = join(process.cwd(), 'src/generated/cache');
+const GLOBAL_DIR = join(CACHE_DIR, 'global');
+const OUTPUT_FILE = join(process.cwd(), 'src/generated/uno-safelist.json');
+
+// 固定图标：这些图标不依赖于 Strapi，始终保留
+const FIXED_ICONS = [
+  'i-ri-rss-line',           // RSS
+  'i-ri-menu-2-line',        // 移动端菜单
+  'i-ri-close-line',         // 关闭按钮
+  'i-ri-file-list-2-line',
+  'i-carbon-campsite',
+  // 可根据项目实际需要添加
+];
+
+function generateSafelist() {
+  if (!existsSync(GLOBAL_DIR)) {
+    console.warn('⚠️ Global cache directory not found, using only fixed icons.');
+    writeFileSync(OUTPUT_FILE, JSON.stringify(FIXED_ICONS, null, 2));
+    return;
+  }
+
+  try {
+    const allIcons = new Set<string>(FIXED_ICONS);
+    const files = readdirSync(GLOBAL_DIR).filter(f => f.endsWith('.json'));
+
+    for (const file of files) {
+      const filePath = join(GLOBAL_DIR, file);
+      const data = JSON.parse(readFileSync(filePath, 'utf-8'));
+      const socialLinks = data.single?.data?.social_links || [];
+      socialLinks.forEach((link: any) => {
+        if (link.icon_class && typeof link.icon_class === 'string' && link.icon_class.startsWith('i-')) {
+          allIcons.add(link.icon_class);
+        }
+      });
+    }
+
+    const safelist = Array.from(allIcons);
+    writeFileSync(OUTPUT_FILE, JSON.stringify(safelist, null, 2));
+    console.log(`✅ Generated UnoCSS safelist: ${safelist.length} total (from all locales)`);
+  } catch (error) {
+    console.error('❌ Failed to generate safelist:', error);
+    process.exit(1);
+  }
+}
+
+generateSafelist();
 
 ## 文件：scripts/update-cache-entry.ts
 #!/usr/bin/env tsx
@@ -5501,6 +5555,8 @@ export interface FooterData {
 }
 
 ## 文件：uno.config.ts
+import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
 import {
   defineConfig,
   presetAttributify,
@@ -5510,7 +5566,38 @@ import {
   presetWebFonts,
   transformerDirectives,
   transformerVariantGroup,
-} from 'unocss'
+} from 'unocss';
+
+// 固定图标（始终需要的硬编码类名）
+const FIXED_SAFELIST = [
+  'i-ri-rss-line',
+  'i-ri-menu-2-line',
+  'i-ri-close-line',
+  'i-ri-file-list-2-line',
+  'i-carbon-campsite',
+  // 可根据项目需要继续添加
+];
+
+// 动态读取 Strapi 生成的图标 safelist
+function loadDynamicSafelist(): string[] {
+  const safelistPath = join(process.cwd(), 'src/generated/uno-safelist.json');
+  if (!existsSync(safelistPath)) {
+    console.warn('⚠️  UnoCSS safelist file not found, using only fixed icons.');
+    return [];
+  }
+  try {
+    const content = readFileSync(safelistPath, 'utf-8');
+    return JSON.parse(content) as string[];
+  } catch (error) {
+    console.error('❌ Failed to parse UnoCSS safelist JSON:', error);
+    return [];
+  }
+}
+
+const dynamicSafelist = loadDynamicSafelist();
+const safelist = [...new Set([...FIXED_SAFELIST, ...dynamicSafelist])];
+
+console.log(`🎨 UnoCSS safelist: ${safelist.length} icons loaded (${dynamicSafelist.length} from Strapi)`);
 
 export default defineConfig({
   shortcuts: [
@@ -5519,7 +5606,7 @@ export default defineConfig({
       'text-main': 'text-hex-555555 dark:text-hex-bbbbbb',
       'text-link': 'text-dark dark:text-white ',
       'border-main': 'border-truegray-300 dark:border-truegray-600',
-      'op-70': 'opacity-70',  // 新增
+      'op-70': 'opacity-70',
     },
     {
       'text-title': 'text-link text-4xl font-800',
@@ -5550,21 +5637,8 @@ export default defineConfig({
     }),
   ],
   transformers: [transformerDirectives(), transformerVariantGroup()],
-  safelist: [
-    'i-ri-file-list-2-line',
-    'i-carbon-campsite',
-    'i-simple-icons-github',
-    'i-simple-icons-x',
-    'i-simple-icons-linkedin',
-    'i-simple-icons-instagram',
-    'i-simple-icons-youtube',
-    'i-simple-icons-bilibili',
-    'i-simple-icons-zhihu',
-    'i-simple-icons-sinaweibo',
-    'i-ri-github-line',
-    'i-ri-twitter-x-line',
-  ],
-})
+  safelist,
+});
 
 ## 文件：webhook-handler.js
 import http from 'node:http';
